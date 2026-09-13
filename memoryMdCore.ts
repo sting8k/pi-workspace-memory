@@ -946,7 +946,11 @@ export function markRecordSuperseded(memoryDir: string, pathOrId: string, byId: 
   const memory = readMemoryFile(filePath);
   if (!memory?.frontmatter.id) throw new Error(`Memory record not found: ${pathOrId}`);
   if (memory.frontmatter.id === normalizedBy) throw new Error(`A record cannot supersede itself: ${pathOrId}`);
-  writeMemoryFile(filePath, memory.content, { ...memory.frontmatter, supersededBy: normalizedBy });
+  writeMemoryFile(filePath, memory.content, {
+    ...memory.frontmatter,
+    supersededBy: normalizedBy,
+    supersededAt: getCurrentDate(),
+  });
   upsertMemoryCatalog(memoryDir, filePath);
   return { id: memory.frontmatter.id, path: path.relative(memoryDir, filePath) };
 }
@@ -963,11 +967,139 @@ export function clearSupersededMarkers(memoryDir: string, byId: string): string[
     if (!memory?.frontmatter.supersededBy || memory.frontmatter.supersededBy !== normalized) continue;
     const frontmatter = { ...memory.frontmatter };
     delete frontmatter.supersededBy;
+    delete frontmatter.supersededAt;
     writeMemoryFile(filePath, memory.content, frontmatter);
     upsertMemoryCatalog(memoryDir, filePath);
     if (memory.frontmatter.id) cleared.push(memory.frontmatter.id);
   }
   return cleared;
+}
+
+/**
+ * Lifecycle: passive prune (lazy GC) for superseded tombstones.
+ *
+ * A tombstone whose supersede marker is still valid and older than `pruneAfterDays`
+ * is deleted outright — the merge has been time-proven and the source record is
+ * redundant. This is deliberately NOT `deleteMemoryFile`: the manual-delete path
+ * resurrects records pointing at the deleted id, which is exactly wrong for GC.
+ * Instead, dangling markers are re-pointed up the chain so hidden records stay
+ * hidden (no zombie resurrection). Every prune is appended to `.pruned.log`.
+ */
+export interface PrunedRecordInfo {
+  id: string;
+  path: string;
+  supersededBy: string;
+  supersededAt: string;
+}
+
+const SWEEP_MIN_INTERVAL_MS = 60 * 60 * 1000;
+const sweepLastRunByDir = new Map<string, number>();
+
+/** Append one line per pruned record so disappearances stay explainable. */
+function appendPrunedLog(memoryDir: string, pruned: PrunedRecordInfo[]): void {
+  try {
+    const lines = pruned.map(
+      (p) =>
+        `${new Date().toISOString()}\t${p.id}\t${p.path}\tsupersededBy=${p.supersededBy}\tsupersededAt=${p.supersededAt}`,
+    );
+    fs.appendFileSync(path.join(memoryDir, ".pruned.log"), `${lines.join("\n")}\n`, "utf-8");
+  } catch {
+    // Best-effort trace only.
+  }
+}
+
+/**
+ * Delete superseded tombstones older than `pruneAfterDays` (marker age, not record age).
+ * Legacy markers without `supersededAt` are kept — their clock starts on the next re-mark.
+ * Returns the pruned records for logging by the caller.
+ */
+export function sweepPrunableMemory(memoryDir: string, pruneAfterDays: number): PrunedRecordInfo[] {
+  if (!pruneAfterDays || pruneAfterDays <= 0 || !fs.existsSync(memoryDir)) return [];
+  const cutoff = Date.now() - pruneAfterDays * 24 * 60 * 60 * 1000;
+
+  const prunable = new Map<
+    string,
+    { id: string; filePath: string; path: string; supersededBy: string; supersededAt: string }
+  >();
+  for (const entry of getMemoryCatalog(memoryDir)) {
+    if (!entry.supersededBy || !supersededByExists(memoryDir, entry.supersededBy)) continue;
+    const memory = readMemoryFile(path.join(memoryDir, entry.path));
+    const supersededAt = memory?.frontmatter.supersededAt;
+    if (!supersededAt) continue;
+    const ts = Date.parse(supersededAt);
+    if (!Number.isFinite(ts) || ts >= cutoff) continue;
+    prunable.set(entry.id, {
+      id: entry.id,
+      filePath: path.join(memoryDir, entry.path),
+      path: entry.path,
+      supersededBy: entry.supersededBy,
+      supersededAt,
+    });
+  }
+  if (prunable.size === 0) return [];
+
+  // Re-point targets: when B (superseded by A) is pruned, every C -> B marker moves
+  // up to B's own live superseder. The walk terminates because the top of a
+  // supersedes chain is live by construction; cycle guards cover corrupted data.
+  const resolveLiveTarget = (prunedId: string): string | undefined => {
+    let current = prunable.get(prunedId)?.supersededBy;
+    const seen = new Set<string>([prunedId]);
+    while (current && prunable.has(current) && !seen.has(current)) {
+      seen.add(current);
+      current = prunable.get(current)?.supersededBy;
+    }
+    return current && !prunable.has(current) ? current : undefined;
+  };
+
+  const pruned: PrunedRecordInfo[] = [];
+  for (const info of prunable.values()) {
+    try {
+      fs.rmSync(info.filePath, { force: true });
+      pruned.push({ id: info.id, path: info.path, supersededBy: info.supersededBy, supersededAt: info.supersededAt });
+    } catch {
+      // Best-effort GC: a failed unlink must not abort the sweep.
+    }
+  }
+  if (pruned.length === 0) return [];
+
+  for (const filePath of listMemoryFiles(memoryDir)) {
+    const memory = readMemoryFile(filePath);
+    const marker = memory?.frontmatter.supersededBy;
+    if (!marker || !prunable.has(marker)) continue;
+    const frontmatter = { ...memory.frontmatter };
+    const liveTarget = resolveLiveTarget(marker);
+    if (liveTarget && liveTarget !== memory.frontmatter.id) {
+      frontmatter.supersededBy = liveTarget;
+      // Keep the original supersededAt: C is at least as old as B it pointed at.
+    } else {
+      delete frontmatter.supersededBy;
+      delete frontmatter.supersededAt;
+    }
+    writeMemoryFile(filePath, memory.content, frontmatter);
+  }
+
+  rebuildMemoryCatalog(memoryDir);
+  appendPrunedLog(memoryDir, pruned);
+  return pruned;
+}
+
+/**
+ * Throttled sweep hook for injection-time calls: at most once per hour per project
+ * directory, so `buildMemoryContext` can ride along without touching the hot path.
+ */
+export function maybeSweepPrunableMemory(memoryDir: string, settings: MemoryMdSettings): PrunedRecordInfo[] {
+  const days = settings.pruneAfterDays ?? 14;
+  if (!days) return [];
+  const now = Date.now();
+  const last = sweepLastRunByDir.get(memoryDir) ?? 0;
+  if (now - last < SWEEP_MIN_INTERVAL_MS) return [];
+  sweepLastRunByDir.set(memoryDir, now);
+  try {
+    return sweepPrunableMemory(memoryDir, days);
+  } catch {
+    // GC is never allowed to break injection.
+    return [];
+  }
 }
 
 /**
@@ -1270,6 +1402,10 @@ export function buildMemoryContext(settings: MemoryMdSettings, cwd: string): str
   const memoryDir = getMemoryDir(settings, cwd);
   if (!fs.existsSync(memoryDir)) return "";
 
+  // Passive prune rides along (throttled to once per hour per project) — GC on
+  // the injection path, never on the memory_write hot path.
+  maybeSweepPrunableMemory(memoryDir, settings);
+
   const candidates = filterSupersededEntries(memoryDir, getMemoryCatalog(memoryDir))
     .filter((entry) => !entry.sensitive)
     .sort(
@@ -1303,6 +1439,27 @@ export function buildMemoryContext(settings: MemoryMdSettings, cwd: string): str
   const memories = candidates.filter((entry) => selectedPaths.has(entry.path));
   if (memories.length === 0) return "";
 
+  // Enforce the systemPrompt.maxTokens budget (≈4 chars/token heuristic) on top of
+  // the file-count cap: oversized descriptions trim the oldest entries first, but
+  // at least the newest record always survives (the field used to be defaulted
+  // but never read).
+  const maxTokens = settings.systemPrompt?.maxTokens ?? 10000;
+  const budgetChars = maxTokens * 4;
+  let usedChars = 0;
+  const budgeted: MemoryCatalogEntry[] = [];
+  for (const entry of memories) {
+    const entryChars =
+      entry.path.length +
+      entry.id.length +
+      entry.kind.length +
+      (entry.description?.length ?? 0) +
+      entry.tags.join(",").length +
+      64;
+    if (budgeted.length > 0 && usedChars + entryChars > budgetChars) break;
+    budgeted.push(entry);
+    usedChars += entryChars;
+  }
+
   const lines: string[] = [
     "# Project Memory",
     "",
@@ -1310,7 +1467,7 @@ export function buildMemoryContext(settings: MemoryMdSettings, cwd: string): str
     "",
   ];
 
-  for (const entry of memories) {
+  for (const entry of budgeted) {
     lines.push(`- ${entry.path} (@${entry.id})`);
     lines.push(`  Kind: ${entry.kind}`);
     lines.push(`  Description: ${entry.description}`);

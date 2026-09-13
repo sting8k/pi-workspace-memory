@@ -263,6 +263,14 @@ export interface SearchInput {
   conceptAliasFamilies?: string[][];
 }
 
+/** Recency key for ranking: frontmatter.updated parsed to ms, 0 when absent/unparseable. */
+function recordRecency(memory: MemoryFile): number {
+  const raw = memory.frontmatter.updated;
+  if (!raw) return 0;
+  const ts = Date.parse(raw);
+  return Number.isFinite(ts) ? ts : 0;
+}
+
 export function searchMemoryFiles(input: SearchInput): SearchHit[] {
   const { files, query, searchIn, kind } = input;
   const rawQuery = query.trim();
@@ -273,21 +281,27 @@ export function searchMemoryFiles(input: SearchInput): SearchHit[] {
   // Regex mode: query contains metacharacters
   if (looksLikeRegex(rawQuery)) {
     const regex = safeRegex(rawQuery);
-    const hits: SearchHit[] = [];
+    const hits: Array<{ hit: SearchHit; ts: number }> = [];
 
     for (const [relPath, memory] of entries) {
       const text = buildSearchText(memory, searchIn);
       if (!regex.test(text)) continue;
 
       hits.push({
-        path: relPath,
-        snippet: buildSnippet(memory, searchIn, regex),
-        matchCount: 1,
-        matchedIn: detectMatchedFields(memory, regex, searchIn),
+        hit: {
+          path: relPath,
+          snippet: buildSnippet(memory, searchIn, regex),
+          matchCount: 1,
+          matchedIn: detectMatchedFields(memory, regex, searchIn),
+        },
+        ts: recordRecency(memory),
       });
     }
 
-    return hits.slice(0, MAX_SEARCH_RESULTS);
+    // Every regex hit ties at matchCount 1, so recency decides (specialist
+    // review #4 quick win — alphabetical path order was the old tie-break).
+    hits.sort((a, b) => b.ts - a.ts);
+    return hits.slice(0, MAX_SEARCH_RESULTS).map((h) => h.hit);
   }
 
   const exactConceptTerms = rawQuery.split(/\s+/).filter((term) => /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(term));
@@ -296,7 +310,7 @@ export function searchMemoryFiles(input: SearchInput): SearchHit[] {
     exactConceptTerms.length > 0 &&
     exactConceptTerms.length === rawQuery.split(/\s+/).length
   ) {
-    const hits: SearchHit[] = [];
+    const hits: Array<SearchHit & { recency?: number }> = [];
     const families = input.conceptAliasFamilies;
     const matchesExact = families
       ? (concepts: string[]) => families.every((family) => family.some((term) => concepts.includes(term)))
@@ -309,8 +323,11 @@ export function searchMemoryFiles(input: SearchInput): SearchHit[] {
         snippet: buildSnippet(memory, searchIn, snippetRegex(exactConceptTerms)),
         matchCount: exactConceptTerms.length,
         matchedIn: ["concepts"],
+        recency: recordRecency(memory),
       });
     }
+    // All exact-concept hits tie at matchCount = term count; recency decides.
+    hits.sort((a, b) => (b.recency ?? 0) - (a.recency ?? 0));
     return hits.slice(0, MAX_SEARCH_RESULTS);
   }
 
@@ -319,7 +336,7 @@ export function searchMemoryFiles(input: SearchInput): SearchHit[] {
   const termRegexes = literalTermRegexes(terms);
   const snipRe = snippetRegex(terms);
 
-  const hits: Array<{ hit: SearchHit; mc: number }> = [];
+  const hits: Array<{ hit: SearchHit; mc: number; ts: number }> = [];
   for (const [relPath, memory] of entries) {
     const text = buildSearchText(memory, searchIn);
     const mc = countMatches(text, termRegexes);
@@ -333,9 +350,12 @@ export function searchMemoryFiles(input: SearchInput): SearchHit[] {
         matchedIn: detectMatchedFields(memory, snipRe, searchIn),
       },
       mc,
+      ts: recordRecency(memory),
     });
   }
 
-  hits.sort((a, b) => b.mc - a.mc);
+  // Relevance first (match count), recency as the tie-break — a six-month-old
+  // event no longer outranks yesterday's record on alphabetical luck.
+  hits.sort((a, b) => b.mc - a.mc || b.ts - a.ts);
   return hits.slice(0, MAX_SEARCH_RESULTS).map((h) => h.hit);
 }

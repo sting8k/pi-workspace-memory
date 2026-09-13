@@ -60,6 +60,8 @@ export interface MemoryFrontmatter {
   created?: string;
   updated?: string;
   supersededBy?: string;
+  /** ISO timestamp set when the supersede marker was attached; drives passive prune age. */
+  supersededAt?: string;
 }
 
 export interface MemoryFile {
@@ -71,7 +73,9 @@ export interface MemoryFile {
 export interface MemoryMdSettings {
   enabled?: boolean;
   localPath?: string;
-  injection?: "system-prompt" | "message-append";
+  injection?: "system-prompt" | "message-append" | "off";
+  /** Passive-prune age for superseded tombstones, in days from the marker timestamp. 0 disables. */
+  pruneAfterDays?: number;
   systemPrompt?: {
     maxTokens?: number;
     includeProjects?: string[];

@@ -38,6 +38,9 @@ export default function memoryMdExtension(pi: ExtensionAPI) {
   pi.on("before_agent_start", async (event, ctx) => {
     const mode = settings.injection || "message-append";
 
+    // "off" registers tools (and commands) without any automatic injection.
+    if (mode === "off") return undefined;
+
     if (!cachedMemoryContext) return undefined;
 
     const isFirstInjection = !memoryInjected;
@@ -59,8 +62,13 @@ export default function memoryMdExtension(pi: ExtensionAPI) {
     }
 
     if (mode === "system-prompt") {
+      // Rebuild from disk each turn instead of appending the session-start
+      // snapshot — records written mid-session reach the very next request.
+      // (Rides the throttled passive-prune sweep, same as message-append.)
+      const freshContext = buildMemoryContext(settings, ctx.cwd);
+      if (!freshContext) return undefined;
       return {
-        systemPrompt: `${event.systemPrompt}\n\n${cachedMemoryContext}`,
+        systemPrompt: `${event.systemPrompt}\n\n${freshContext}`,
       };
     }
 

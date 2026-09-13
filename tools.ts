@@ -24,6 +24,7 @@ import {
   memoryFileFromCatalogEntry,
   normalizeConceptSearchQuery,
   normalizeMemoryConcepts,
+  parseMemoryFacts,
   readMemoryFile,
   rebuildMemoryCatalog,
   resolveMemoryFile,
@@ -510,8 +511,15 @@ export function registerMemoryWrite(pi: ExtensionAPI, settings: MemoryMdSettings
 
         // Validate supersede targets before any file is touched, so a bad reference never leaves
         // a half-applied write behind. Already-superseded targets are skipped later (reported,
-        // not fatal).
-        const supersedeTargets: Array<{ filePath: string; id: string; supersededBy?: string }> = [];
+        // not fatal). Structured fields are captured here for the merge receipt.
+        const supersedeTargets: Array<{
+          filePath: string;
+          id: string;
+          supersededBy?: string;
+          claims?: string[];
+          factKeys: string[];
+          concepts: string[];
+        }> = [];
         if (supersedes?.length) {
           for (const ref of supersedes) {
             const filePath = resolveMemoryFile(memoryDir, ref);
@@ -522,6 +530,9 @@ export function registerMemoryWrite(pi: ExtensionAPI, settings: MemoryMdSettings
               filePath,
               id: memory.frontmatter.id,
               supersededBy: memory.frontmatter.supersededBy,
+              claims: memory.frontmatter.claims,
+              factKeys: Object.keys(parseMemoryFacts(memory.content).facts ?? {}),
+              concepts: memory.frontmatter.concepts ?? [],
             });
           }
         }
@@ -548,6 +559,7 @@ export function registerMemoryWrite(pi: ExtensionAPI, settings: MemoryMdSettings
             ? frontmatter.supersededBy
             : undefined;
         delete frontmatter.supersededBy;
+        delete frontmatter.supersededAt;
 
         // Write-then-mark: the new record is written FIRST, so an interrupted run leaves the new
         // record plus a few not-yet-hidden records (harmless duplication) instead of lost content.
@@ -591,6 +603,7 @@ export function registerMemoryWrite(pi: ExtensionAPI, settings: MemoryMdSettings
               if (markedPath && markedMemory) {
                 const restored = { ...markedMemory.frontmatter };
                 delete restored.supersededBy;
+                delete restored.supersededAt;
                 writeMemoryFile(markedPath, markedMemory.content, restored);
               }
             } catch {
@@ -615,6 +628,36 @@ export function registerMemoryWrite(pi: ExtensionAPI, settings: MemoryMdSettings
           }),
         );
         const operation = beforeRaw === undefined ? "create" : "overwrite";
+
+        // Merge receipt: structured fields of each marked source the distilled
+        // record did NOT carry over. Claims match fuzzily (normalized equality
+        // or containment in the merged content); fact keys and concepts exactly.
+        // Makes the merge loss visible at merge time, before passive prune can
+        // delete the source record for good.
+        const normalizeClaimText = (value: string) => value.toLowerCase().replace(/\s+/g, " ").trim();
+        const mergedFactKeys = new Set(Object.keys(parseMemoryFacts(memoryContent).facts ?? {}));
+        const mergedConceptSet = new Set(frontmatter.concepts ?? []);
+        const mergedClaimSet = new Set((frontmatter.claims ?? []).map(normalizeClaimText));
+        const mergedContentNorm = normalizeClaimText(memoryContent);
+        const receipts: Array<{
+          id: string;
+          missingClaims: string[];
+          missingFactKeys: string[];
+          missingConcepts: string[];
+        }> = [];
+        for (const source of supersedeTargets) {
+          if (!supersededIds.includes(source.id)) continue;
+          const missingClaims = (source.claims ?? []).filter((claim) => {
+            const norm = normalizeClaimText(claim);
+            return !mergedClaimSet.has(norm) && !mergedContentNorm.includes(norm);
+          });
+          const missingFactKeys = source.factKeys.filter((key) => !mergedFactKeys.has(key));
+          const missingConcepts = source.concepts.filter((concept) => !mergedConceptSet.has(concept));
+          if (missingClaims.length || missingFactKeys.length || missingConcepts.length) {
+            receipts.push({ id: source.id, missingClaims, missingFactKeys, missingConcepts });
+          }
+        }
+
         const status = routedTo
           ? `Memory file routed to overwrite: ${relTarget} (@${target.id}) (ID-family match)`
           : operation === "overwrite"
@@ -632,6 +675,23 @@ export function registerMemoryWrite(pi: ExtensionAPI, settings: MemoryMdSettings
           );
         }
         if (overwriteDiff?.text) responseParts.push(overwriteDiff.text);
+        if (receipts.length) {
+          const receiptLines = receipts.map((r) => {
+            const parts: string[] = [];
+            if (r.missingClaims.length)
+              parts.push(`${r.missingClaims.length} claim(s): ${r.missingClaims.map((c) => `"${c}"`).join(", ")}`);
+            if (r.missingFactKeys.length)
+              parts.push(`${r.missingFactKeys.length} fact key(s): ${r.missingFactKeys.join(", ")}`);
+            if (r.missingConcepts.length)
+              parts.push(`${r.missingConcepts.length} concept(s): ${r.missingConcepts.join(", ")}`);
+            return `  @${r.id} - ${parts.join("; ")}`;
+          });
+          responseParts.push(
+            ["Merge receipt - not carried over (fold into this record or accept the loss):", ...receiptLines].join(
+              "\n",
+            ),
+          );
+        }
         if (duplicateHints) responseParts.push(duplicateHints);
         if (writeWarnings) responseParts.push(writeWarnings);
         return {
@@ -643,6 +703,7 @@ export function registerMemoryWrite(pi: ExtensionAPI, settings: MemoryMdSettings
             diff: overwriteDiff,
             frontmatter: { ...frontmatter, id: target.id, kind: target.kind },
             concepts: conceptNormalization.audit,
+            receipt: receipts,
             superseded: supersededIds,
             skipped,
             warnings: buildMemoryWriteWarnings({

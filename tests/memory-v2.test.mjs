@@ -27,6 +27,7 @@ import {
   rebuildMemoryCatalog,
   resolveMemoryPath,
   resolveMemoryWriteTarget,
+  sweepPrunableMemory,
   upsertMemoryCatalog,
   validateMemoryContent,
   writeMemoryFile,
@@ -2059,6 +2060,355 @@ test("memory_search without a query lists records and filters by kind", async ()
     assert.equal(searched.details.mode, "search");
     assert.equal(searched.details.count, 1);
     assert.equal(searched.details.results[0].id, "state.runtime");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ============================================================================
+// Round 4 (ported back from dsh-memory-md): maxTokens budget, passive prune,
+// merge receipt, search recency tie-break
+// ============================================================================
+
+test("context enforces systemPrompt.maxTokens by trimming oldest entries first", () => {
+  const { root, workspace, settings } = fixture();
+  try {
+    const memoryDir = getMemoryDir(settings, workspace);
+    for (let day = 1; day <= 4; day++) {
+      writeDatedMemory(memoryDir, "event", `budget-${day}`, day, "2026-12");
+    }
+    const full = buildMemoryContext(settings, workspace);
+    assert.equal(injectedRecordIds(full).length, 4);
+
+    const tight = buildMemoryContext({ ...settings, systemPrompt: { maxTokens: 1 } }, workspace);
+    const tightIds = injectedRecordIds(tight);
+    assert.equal(tightIds.length, 1);
+    assert.equal(tightIds[0], "event.budget-4");
+
+    const partial = buildMemoryContext({ ...settings, systemPrompt: { maxTokens: 10 } }, workspace);
+    const partialIds = injectedRecordIds(partial);
+    assert.ok(partialIds.length >= 1 && partialIds.length < 4);
+    assert.equal(partialIds[0], "event.budget-4");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+const OLD_MARKER = "2026-01-01T00:00:00.000Z";
+
+function writeTombstone(memoryDir, id, kind, supersededBy, supersededAt) {
+  const filePath = path.join(memoryDir, "records", `${id}.md`);
+  writeMemoryFile(filePath, `# ${id}`, {
+    id,
+    kind,
+    description: `${id} description`,
+    created: "2026-01-01",
+    updated: "2026-01-01",
+    supersededBy,
+    ...(supersededAt ? { supersededAt } : {}),
+  });
+  upsertMemoryCatalog(memoryDir, filePath);
+  return filePath;
+}
+
+test("sweep prunes aged tombstones, keeps the distill, and never resurrects chain tails", () => {
+  const { root, workspace, settings } = fixture();
+  try {
+    const memoryDir = getMemoryDir(settings, workspace);
+    fs.mkdirSync(path.join(memoryDir, "records"), { recursive: true });
+    const liveA = writeTombstone(memoryDir, "state.a", "state", undefined, undefined);
+    const tombB = writeTombstone(memoryDir, "state.b", "state", "state.a", OLD_MARKER);
+    const tombC = writeTombstone(memoryDir, "state.c", "state", "state.b", OLD_MARKER);
+
+    const context = buildMemoryContext({ ...settings, pruneAfterDays: 1 }, workspace);
+    assert.ok(context.includes("@state.a"));
+    assert.ok(!context.includes("state.b"));
+    assert.ok(!context.includes("state.c"));
+
+    assert.equal(fs.existsSync(liveA), true);
+    assert.equal(fs.existsSync(tombB), false);
+    assert.equal(fs.existsSync(tombC), false);
+    assert.deepEqual(
+      getMemoryCatalog(memoryDir).map((entry) => entry.id),
+      ["state.a"],
+    );
+
+    const log = fs.readFileSync(path.join(memoryDir, ".pruned.log"), "utf-8");
+    assert.match(log, /state\.b\t/);
+    assert.match(log, /state\.c\t/);
+    assert.match(log, /supersededBy=state\.a/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("sweep re-points fresh chain tails instead of resurrecting them", () => {
+  const { root, workspace, settings } = fixture();
+  try {
+    const memoryDir = getMemoryDir(settings, workspace);
+    fs.mkdirSync(path.join(memoryDir, "records"), { recursive: true });
+    writeTombstone(memoryDir, "state.a", "state", undefined, undefined);
+    const tombB = writeTombstone(memoryDir, "state.b", "state", "state.a", OLD_MARKER);
+    const freshC = writeTombstone(memoryDir, "state.c", "state", "state.b", new Date().toISOString());
+
+    const pruned = sweepPrunableMemory(memoryDir, 1);
+    assert.deepEqual(
+      pruned.map((p) => p.id),
+      ["state.b"],
+    );
+    assert.equal(fs.existsSync(tombB), false);
+    assert.equal(fs.existsSync(freshC), true);
+
+    const cMemory = readMemoryFile(freshC);
+    assert.equal(cMemory.frontmatter.supersededBy, "state.a");
+    const context = buildMemoryContext(settings, workspace);
+    assert.ok(context.includes("@state.a"));
+    assert.ok(!context.includes("state.c"));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("legacy tombstones without supersededAt are never pruned", () => {
+  const { root, workspace, settings } = fixture();
+  try {
+    const memoryDir = getMemoryDir(settings, workspace);
+    fs.mkdirSync(path.join(memoryDir, "records"), { recursive: true });
+    writeTombstone(memoryDir, "state.a", "state", undefined, undefined);
+    const legacyB = writeTombstone(memoryDir, "state.b", "state", "state.a", undefined);
+
+    const pruned = sweepPrunableMemory(memoryDir, 1);
+    assert.deepEqual(pruned, []);
+    assert.equal(fs.existsSync(legacyB), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("pruneAfterDays 0 disables the sweep entirely", () => {
+  const { root, workspace, settings } = fixture();
+  try {
+    const memoryDir = getMemoryDir(settings, workspace);
+    fs.mkdirSync(path.join(memoryDir, "records"), { recursive: true });
+    writeTombstone(memoryDir, "state.a", "state", undefined, undefined);
+    const tombB = writeTombstone(memoryDir, "state.b", "state", "state.a", OLD_MARKER);
+
+    assert.deepEqual(sweepPrunableMemory(memoryDir, 0), []);
+    assert.equal(fs.existsSync(tombB), true);
+    assert.equal(fs.existsSync(path.join(memoryDir, ".pruned.log")), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("memory_write merge receipt lists claims/facts/concepts not carried over", async () => {
+  const { root, workspace, settings } = fixture();
+  try {
+    const { pi, tools } = fakePi();
+    registerMemoryWrite(pi, settings);
+    const signal = toolSignal();
+    const cwd = { cwd: workspace };
+
+    await tools.get("memory_write").execute(
+      "w-src",
+      {
+        path: "events/src.md",
+        kind: "event",
+        description: "Source record",
+        summary: "Carries one keepable claim and one losable claim",
+        concepts: ["keep-concept", "lose-concept"],
+        claims: ["keep this claim", "lose this claim"],
+        facts: { "keep.key": 1, "lose.key": 2 },
+      },
+      signal,
+      () => {},
+      cwd,
+    );
+    const merged = await tools.get("memory_write").execute(
+      "w-distill",
+      {
+        path: "state/distill.md",
+        description: "Distilled record",
+        summary: "Only keeps the keepable material",
+        concepts: ["keep-concept"],
+        claims: ["Keep THIS claim"],
+        facts: { "keep.key": 1 },
+        supersedes: ["@event.src"],
+      },
+      signal,
+      () => {},
+      cwd,
+    );
+
+    assert.deepEqual(merged.details.superseded, ["event.src"]);
+    assert.equal(merged.details.receipt.length, 1);
+    const receipt = merged.details.receipt[0];
+    assert.equal(receipt.id, "event.src");
+    assert.deepEqual(receipt.missingClaims, ["lose this claim"]);
+    assert.deepEqual(receipt.missingFactKeys, ["lose.key"]);
+    assert.deepEqual(receipt.missingConcepts, ["lose-concept"]);
+    assert.match(merged.content[0].text, /Merge receipt - not carried over/);
+    assert.match(merged.content[0].text, /"lose this claim"/);
+    assert.match(merged.content[0].text, /lose\.key/);
+    assert.match(merged.content[0].text, /lose-concept/);
+    assert.ok(!merged.content[0].text.includes('"keep this claim"'));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("rewriting a superseded record resets the prune clock", async () => {
+  const { root, workspace, settings } = fixture();
+  try {
+    const { pi, tools } = fakePi();
+    registerMemoryWrite(pi, settings);
+    const signal = toolSignal();
+    const cwd = { cwd: workspace };
+    const memoryDir = getMemoryDir(settings, workspace);
+
+    await tools
+      .get("memory_write")
+      .execute(
+        "w1",
+        { path: "events/old.md", kind: "event", description: "Old", claims: ["old"] },
+        signal,
+        () => {},
+        cwd,
+      );
+    await tools
+      .get("memory_write")
+      .execute(
+        "w2",
+        { path: "events/new.md", kind: "event", description: "New", claims: ["new"], supersedes: ["@event.old"] },
+        signal,
+        () => {},
+        cwd,
+      );
+    const oldPath = findMemoryFileById(memoryDir, "@event.old");
+    const marked = readMemoryFile(oldPath);
+    assert.ok(marked.frontmatter.supersededAt, "marker must stamp supersededAt");
+    assert.match(marked.frontmatter.supersededAt, /^\d{4}-\d{2}-\d{2}T/);
+
+    await tools
+      .get("memory_write")
+      .execute(
+        "w3",
+        { path: "events/old.md", kind: "event", description: "Old, revisited", claims: ["still relevant"] },
+        signal,
+        () => {},
+        cwd,
+      );
+    const revisited = readMemoryFile(findMemoryFileById(memoryDir, "@event.old"));
+    assert.equal(revisited.frontmatter.supersededBy, undefined);
+    assert.equal(revisited.frontmatter.supersededAt, undefined);
+
+    assert.deepEqual(sweepPrunableMemory(memoryDir, 1), []);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function writeDatedRecord(memoryDir, id, kind, body, updated, concepts = []) {
+  const filePath = path.join(memoryDir, "records", `${id}.md`);
+  writeMemoryFile(filePath, body, {
+    id,
+    kind,
+    description: `${id} description`,
+    concepts,
+    created: "2026-01-01T00:00:00.000Z",
+    updated,
+  });
+  upsertMemoryCatalog(memoryDir, filePath);
+  return filePath;
+}
+
+test("natural-language search breaks match-count ties by recency, newest first", () => {
+  const { root, workspace, settings } = fixture();
+  try {
+    const memoryDir = getMemoryDir(settings, workspace);
+    fs.mkdirSync(path.join(memoryDir, "records"), { recursive: true });
+    writeDatedRecord(memoryDir, "event.a-old", "event", "# Old deploy run notes\n", "2026-01-01T00:00:00.000Z");
+    writeDatedRecord(memoryDir, "event.z-new", "event", "# Fresh deploy run notes\n", "2026-09-13T00:00:00.000Z");
+
+    const files = new Map(
+      getMemoryCatalog(memoryDir).map((entry) => [entry.path, memoryFileFromCatalogEntry(memoryDir, entry)]),
+    );
+    const hits = searchMemoryFiles({ files, query: "deploy run", searchIn: "content" });
+    assert.equal(hits.length, 2);
+    assert.equal(hits[0].path, path.join("records", "event.z-new.md"));
+    assert.equal(hits[1].path, path.join("records", "event.a-old.md"));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("match count still wins over recency", () => {
+  const { root, workspace, settings } = fixture();
+  try {
+    const memoryDir = getMemoryDir(settings, workspace);
+    fs.mkdirSync(path.join(memoryDir, "records"), { recursive: true });
+    writeDatedRecord(memoryDir, "event.old-dense", "event", "# deploy rollback run\n", "2026-01-01T00:00:00.000Z");
+    writeDatedRecord(memoryDir, "event.new-sparse", "event", "# deploy run\n", "2026-09-13T00:00:00.000Z");
+
+    const files = new Map(
+      getMemoryCatalog(memoryDir).map((entry) => [entry.path, memoryFileFromCatalogEntry(memoryDir, entry)]),
+    );
+    const hits = searchMemoryFiles({ files, query: "deploy rollback", searchIn: "content" });
+    assert.equal(hits[0].path, path.join("records", "event.old-dense.md"));
+    assert.equal(hits[0].matchCount, 2);
+    assert.equal(hits[1].matchCount, 1);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("regex mode ranks by recency when every hit ties at match count", () => {
+  const { root, workspace, settings } = fixture();
+  try {
+    const memoryDir = getMemoryDir(settings, workspace);
+    fs.mkdirSync(path.join(memoryDir, "records"), { recursive: true });
+    writeDatedRecord(
+      memoryDir,
+      "event.alpha-legacy",
+      "event",
+      "# failure during build (old)\n",
+      "2026-01-01T00:00:00.000Z",
+    );
+    writeDatedRecord(
+      memoryDir,
+      "event.omega-recent",
+      "event",
+      "# failure during build (new)\n",
+      "2026-09-13T00:00:00.000Z",
+    );
+
+    const files = new Map(
+      getMemoryCatalog(memoryDir).map((entry) => [entry.path, memoryFileFromCatalogEntry(memoryDir, entry)]),
+    );
+    const hits = searchMemoryFiles({ files, query: "fail.*build", searchIn: "content" });
+    assert.equal(hits.length, 2);
+    assert.equal(hits[0].path, path.join("records", "event.omega-recent.md"));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("exact-concept search ranks by recency when all hits tie at term count", () => {
+  const { root, workspace, settings } = fixture();
+  try {
+    const memoryDir = getMemoryDir(settings, workspace);
+    fs.mkdirSync(path.join(memoryDir, "records"), { recursive: true });
+    writeDatedRecord(memoryDir, "event.auth-early", "event", "# Auth early\n", "2026-01-01T00:00:00.000Z", [
+      "auth-flow",
+    ]);
+    writeDatedRecord(memoryDir, "event.auth-late", "event", "# Auth late\n", "2026-09-13T00:00:00.000Z", ["auth-flow"]);
+
+    const files = new Map(
+      getMemoryCatalog(memoryDir).map((entry) => [entry.path, memoryFileFromCatalogEntry(memoryDir, entry)]),
+    );
+    const hits = searchMemoryFiles({ files, query: "auth-flow", searchIn: "concepts" });
+    assert.equal(hits.length, 2);
+    assert.equal(hits[0].path, path.join("records", "event.auth-late.md"));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
