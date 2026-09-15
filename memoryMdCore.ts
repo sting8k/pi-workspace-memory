@@ -94,7 +94,8 @@ export function loadSettings(): MemoryMdSettings {
   try {
     const content = fs.readFileSync(globalSettings, "utf-8");
     const parsed = JSON.parse(content);
-    const loadedSettings = { ...DEFAULT_SETTINGS, ...(parsed["pi-memory-md"] as MemoryMdSettings) };
+    const stored = (parsed["pi-workspace-memory"] ?? parsed["pi-memory-md"]) as MemoryMdSettings | undefined;
+    const loadedSettings = { ...DEFAULT_SETTINGS, ...stored };
 
     if (loadedSettings.localPath) {
       loadedSettings.localPath = expandPath(loadedSettings.localPath);

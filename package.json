@@ -1,20 +1,19 @@
 {
-  "name": "pi-memory-md",
+  "name": "pi-workspace-memory",
   "version": "0.3.0",
-  "description": "Letta-like memory management for pi using structured markdown files in a GitHub repository",
+  "description": "Letta-like memory management for pi using structured markdown files",
   "type": "module",
   "license": "MIT",
-  "author": "VandeePunk",
+  "author": "sting8k",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/VandeeFeng/pi-memory-md.git"
+    "url": "git+https://github.com/sting8k/pi-workspace-memory.git"
   },
   "keywords": [
     "pi-package",
     "pi-extension",
     "memory",
     "markdown",
-    "git",
     "letta",
     "persistent-memory",
     "ai-memory",

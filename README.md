@@ -1,21 +1,21 @@
-# pi-memory-md
+# pi-workspace-memory
 
 Project-scoped Markdown memory for the Pi coding agent.
+
+Independently maintained fork of [VandeeFeng/pi-memory-md](https://github.com/VandeeFeng/pi-memory-md) (v0.1.24); the tool set, lifecycle, and storage layout have diverged significantly.
 
 Memory is an auxiliary channel for durable state, reports, and research. It is independent from task-management systems such as Harness.
 
 ## Install
 
 ```bash
-pi install npm:pi-memory-md
-# or
-pi install git:github.com/VandeeFeng/pi-memory-md
+pi install git:github.com/sting8k/pi-workspace-memory
 ```
 
 For local development:
 
 ```bash
-pi -e /absolute/path/to/pi-memory-md/index.ts
+pi -e /absolute/path/to/pi-workspace-memory/index.ts
 ```
 
 Local-path loading does not require this repository's `node_modules`; runtime frontmatter support is built in.
@@ -184,13 +184,15 @@ Settings live in `~/.pi/agent/settings.json`:
 
 ```json
 {
-  "pi-memory-md": {
+  "pi-workspace-memory": {
     "enabled": true,
     "localPath": "~/.pi/memory-md",
     "injection": "message-append"
   }
 }
 ```
+
+The legacy `pi-memory-md` settings key is still honored as a fallback.
 
 ## Development
 

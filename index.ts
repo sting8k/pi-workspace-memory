@@ -54,7 +54,7 @@ export default function memoryMdExtension(pi: ExtensionAPI) {
     if (mode === "message-append" && isFirstInjection) {
       return {
         message: {
-          customType: "pi-memory-md",
+          customType: "pi-workspace-memory",
           content: cachedMemoryContext,
           display: false,
         },
@@ -95,7 +95,7 @@ export default function memoryMdExtension(pi: ExtensionAPI) {
 
       if (mode === "message-append") {
         pi.sendMessage({
-          customType: "pi-memory-md-refresh",
+          customType: "pi-workspace-memory-refresh",
           content: memoryContext.replace(/^# Project Memory/, "# Project Memory (Refreshed)"),
           display: false,
         });
