@@ -47,6 +47,7 @@
   ],
   "scripts": {
     "check": "biome check --write --error-on-warnings . && tsc --noEmit",
+    "lint": "biome ci .",
     "test": "rm -rf .test-dist && tsc --noEmit false --outDir .test-dist && node --test tests/*.test.mjs; status=$?; rm -rf .test-dist; exit $status"
   },
   "peerDependencies": {
