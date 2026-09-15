@@ -69,10 +69,6 @@ relation.follow_up -> @event.next-investigation
 
 `memory_search` hides superseded records by default (`includeSuperseded: true` to list them); list mode appends cluster warnings — same-kind records sharing a concept with 4+ members — each with a ready-to-copy merge call. `memory_read` reads hidden records and appends a supersede note. The catalog rebuilds entirely from frontmatter; no migration needed.
 
-## Concept normalization
-
-Concepts normalize to lowercase kebab-case canonical labels: known aliases resolve automatically, unknown concepts auto-register, ambiguous near-duplicates return advisory hints only. Hash/number/date-like concepts are blocked (move to `facts`/`tags`); sentence-like labels warn but register. Concept search is alias-aware and exact — queries expand to the alias family and return no results when absent. `memory_delete` preserves aliases and active alias targets while cleaning up.
-
 ## Configuration
 
 `~/.pi/agent/settings.json`:
