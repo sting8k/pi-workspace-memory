@@ -1263,6 +1263,85 @@ export function getMemoryCatalog(memoryDir: string): MemoryCatalogEntry[] {
   if (catalog && catalogIsFresh(memoryDir, catalog.entries)) return catalog.entries;
   return rebuildMemoryCatalog(memoryDir);
 }
+/**
+ * Cross-session update detection.
+ *
+ * Sessions poll the catalog signature at turn boundaries. Entries changed outside
+ * this session (another session, git pull, manual edit) produce a compact append-only
+ * notice. The comparison is content-based, so catalog rewrites with identical
+ * content never trigger a notice.
+ */
+
+export type CatalogSignature = Map<string, MemoryCatalogEntry>;
+
+export function readCatalogSignature(memoryDir: string): CatalogSignature {
+  return new Map(getMemoryCatalog(memoryDir).map((entry) => [entry.id, entry]));
+}
+
+export interface CatalogDelta {
+  added: MemoryCatalogEntry[];
+  updated: MemoryCatalogEntry[]; // entries from the NEW signature
+  removed: MemoryCatalogEntry[]; // entries from the OLD signature
+}
+
+const CATALOG_CHANGE_KEYS = ["mtimeMs", "updated", "supersededBy"] as const;
+
+export function diffCatalogSignatures(oldSig: CatalogSignature, newSig: CatalogSignature): CatalogDelta | null {
+  const added: MemoryCatalogEntry[] = [];
+  const updated: MemoryCatalogEntry[] = [];
+  const removed: MemoryCatalogEntry[] = [];
+  for (const [id, entry] of newSig) {
+    const prev = oldSig.get(id);
+    if (!prev) added.push(entry);
+    else if (CATALOG_CHANGE_KEYS.some((key) => prev[key] !== entry[key])) updated.push(entry);
+  }
+  for (const [id, entry] of oldSig) {
+    if (!newSig.has(id)) removed.push(entry);
+  }
+  if (!added.length && !updated.length && !removed.length) return null;
+  return { added, updated, removed };
+}
+
+/**
+ * Render a compact notice. Sensitive entries keep their id only; deletions found
+ * in .pruned.log are labeled "(pruned)" so passive GC reads differently from
+ * explicit deletes.
+ */
+export function renderUpdateNotice(delta: CatalogDelta, prunedIds: Set<string>): string {
+  const line = (entry: MemoryCatalogEntry, mark: string, suffix = "") =>
+    `  ${mark} @${entry.id}${suffix}${entry.sensitive ? " (sensitive)" : ` — ${entry.description}`}`;
+  const lines = [
+    ...delta.added.map((entry) => line(entry, "+")),
+    ...delta.updated.map((entry) => line(entry, "~")),
+    ...delta.removed.map((entry) => line(entry, "-", prunedIds.has(entry.id) ? " (pruned)" : "")),
+  ];
+  const cap = 10;
+  if (lines.length > cap) {
+    return `Project memory changed since last turn (external write):\n${lines.slice(0, cap).join("\n")}\n  (+${lines.length - cap} more)`;
+  }
+  return `Project memory changed since last turn (external write):\n${lines.join("\n")}`;
+}
+
+/** Ids present in the tail of .pruned.log, used to explain disappearances. */
+export function readPrunedIds(memoryDir: string, maxBytes = 8192): Set<string> {
+  try {
+    const logPath = path.join(memoryDir, ".pruned.log");
+    const stat = fs.statSync(logPath);
+    const start = Math.max(0, stat.size - maxBytes);
+    const fd = fs.openSync(logPath, "r");
+    const buffer = Buffer.alloc(stat.size - start);
+    fs.readSync(fd, buffer, 0, buffer.length, start);
+    fs.closeSync(fd);
+    const ids = new Set<string>();
+    for (const row of buffer.toString("utf8").split("\n")) {
+      const cols = row.split("\t");
+      if (cols.length >= 2 && cols[1]) ids.add(cols[1]);
+    }
+    return ids;
+  } catch {
+    return new Set<string>();
+  }
+}
 
 export function upsertMemoryCatalog(memoryDir: string, filePath: string): void {
   const entry = catalogEntryFromMemory(memoryDir, filePath);

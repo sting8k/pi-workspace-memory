@@ -1,6 +1,6 @@
 {
   "name": "pi-workspace-memory",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Letta-like memory management for pi using structured markdown files",
   "type": "module",
   "license": "MIT",

@@ -1,6 +1,16 @@
 import fs from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { buildMemoryContext, getMemoryDir, loadSettings, type MemoryMdSettings } from "./memoryMdCore.js";
+import {
+  buildMemoryContext,
+  type CatalogSignature,
+  diffCatalogSignatures,
+  getMemoryDir,
+  loadSettings,
+  type MemoryMdSettings,
+  readCatalogSignature,
+  readPrunedIds,
+  renderUpdateNotice,
+} from "./memoryMdCore.js";
 import { registerAllMemoryTools } from "./tools.js";
 
 /**
@@ -11,6 +21,10 @@ export default function memoryMdExtension(pi: ExtensionAPI) {
   let settings: MemoryMdSettings = loadSettings();
   let cachedMemoryContext: string | null = null;
   let memoryInjected = false;
+  // Cross-session update detection: catalog signature at the last turn boundary,
+  // plus a flag absorbing this session's own writes so notices stay foreign-only.
+  let catalogSig: CatalogSignature | null = null;
+  let ownWriteThisTurn = false;
 
   function initMemoryContext(ctx: ExtensionContext, options: { showNotification: boolean }): boolean {
     settings = loadSettings();
@@ -27,6 +41,7 @@ export default function memoryMdExtension(pi: ExtensionAPI) {
     }
 
     cachedMemoryContext = buildMemoryContext(settings, ctx.cwd);
+    catalogSig = readCatalogSignature(memoryDir);
     memoryInjected = false;
     return true;
   }
@@ -61,6 +76,34 @@ export default function memoryMdExtension(pi: ExtensionAPI) {
       };
     }
 
+    // Cross-session updates: diff the catalog signature at each turn boundary and
+    // append a compact notice when another session (or an external write) changed
+    // project memory. Append-only — the cached prefix and system prompt stay
+    // byte-identical, so provider prompt caching is unaffected.
+    if (mode === "message-append" && !isFirstInjection && catalogSig) {
+      const memoryDir = getMemoryDir(settings, ctx.cwd);
+      if (fs.existsSync(memoryDir)) {
+        const sigNow = readCatalogSignature(memoryDir);
+        const delta = diffCatalogSignatures(catalogSig, sigNow);
+        catalogSig = sigNow;
+        if (delta) {
+          const notice = renderUpdateNotice(delta, readPrunedIds(memoryDir));
+          ctx.ui.notify(
+            `Memory updated elsewhere: +${delta.added.length} ~${delta.updated.length} −${delta.removed.length}`,
+            "info",
+          );
+          return {
+            message: {
+              customType: "pi-workspace-memory-update",
+              content: notice,
+              display: false,
+            },
+          };
+        }
+      }
+      return undefined;
+    }
+
     if (mode === "system-prompt") {
       // Rebuild from disk each turn instead of appending the session-start
       // snapshot — records written mid-session reach the very next request.
@@ -75,7 +118,19 @@ export default function memoryMdExtension(pi: ExtensionAPI) {
     return undefined;
   });
 
-  registerAllMemoryTools(pi, settings);
+  // Absorb this session's own writes right after the turn ends, so the next turn's
+  // diff only reports foreign changes. Without own writes the signature is left
+  // untouched: mid-turn foreign writes surface at the next turn boundary.
+  pi.on("turn_end", async (_event, ctx) => {
+    if (!ownWriteThisTurn || !settings.enabled) return;
+    ownWriteThisTurn = false;
+    const memoryDir = getMemoryDir(settings, ctx.cwd);
+    if (fs.existsSync(memoryDir)) catalogSig = readCatalogSignature(memoryDir);
+  });
+
+  registerAllMemoryTools(pi, settings, () => {
+    ownWriteThisTurn = true;
+  });
 
   pi.registerCommand("memory-refresh", {
     description: "Refresh memory context from files",
@@ -89,6 +144,8 @@ export default function memoryMdExtension(pi: ExtensionAPI) {
 
       cachedMemoryContext = memoryContext;
       memoryInjected = false;
+      const refreshDir = getMemoryDir(settings, ctx.cwd);
+      if (fs.existsSync(refreshDir)) catalogSig = readCatalogSignature(refreshDir);
 
       const mode = settings.injection || "message-append";
       const fileCount = memoryContext.split("\n").filter((l) => l.startsWith("-")).length;

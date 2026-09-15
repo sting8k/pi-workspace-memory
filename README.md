@@ -26,6 +26,7 @@ Project-scoped Markdown memory for the Pi coding agent — durable state, report
 ```
 
 - `state` = still-current facts; `event` = append-only reports. Writes are identity-addressed: `memory_write(path="events/foo.md", kind="event")` stores `records/event.foo.md` (legacy `state/`/`events/` paths remain readable).
+- Cross-session updates: when another session (or any external write) changes project memory, the next turn appends a compact `+ ~ −` notice listing changed ids (message-append mode). Append-only, so the system prompt and cached prefix stay byte-identical.
 - No init tool, no git layer: the first `memory_write` creates `records/` plus two defaults (`state.identity`, `state.preferences`). Renaming a project folder means moving `projects/<slug>/` by hand.
 
 ## Install

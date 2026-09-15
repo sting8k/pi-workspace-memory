@@ -347,7 +347,7 @@ export function registerMemoryRead(pi: ExtensionAPI, settings: MemoryMdSettings)
   });
 }
 
-export function registerMemoryWrite(pi: ExtensionAPI, settings: MemoryMdSettings): void {
+export function registerMemoryWrite(pi: ExtensionAPI, settings: MemoryMdSettings, onOwnMutation?: () => void): void {
   pi.registerTool({
     name: "memory_write",
     label: "Memory Write",
@@ -393,6 +393,7 @@ export function registerMemoryWrite(pi: ExtensionAPI, settings: MemoryMdSettings
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      onOwnMutation?.();
       const {
         path: relPath,
         content,
@@ -742,7 +743,7 @@ export function registerMemoryWrite(pi: ExtensionAPI, settings: MemoryMdSettings
   });
 }
 
-export function registerMemoryDelete(pi: ExtensionAPI, settings: MemoryMdSettings): void {
+export function registerMemoryDelete(pi: ExtensionAPI, settings: MemoryMdSettings, onOwnMutation?: () => void): void {
   pi.registerTool({
     name: "memory_delete",
     label: "Memory Delete",
@@ -753,6 +754,7 @@ export function registerMemoryDelete(pi: ExtensionAPI, settings: MemoryMdSetting
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      onOwnMutation?.();
       const { path: target } = params as { path: string };
       const memoryDir = getMemoryDir(settings, ctx.cwd);
       try {
@@ -975,9 +977,9 @@ export function registerMemorySearch(pi: ExtensionAPI, settings: MemoryMdSetting
   });
 }
 
-export function registerAllMemoryTools(pi: ExtensionAPI, settings: MemoryMdSettings): void {
+export function registerAllMemoryTools(pi: ExtensionAPI, settings: MemoryMdSettings, onOwnMutation?: () => void): void {
   registerMemoryRead(pi, settings);
-  registerMemoryWrite(pi, settings);
+  registerMemoryWrite(pi, settings, onOwnMutation);
   registerMemorySearch(pi, settings);
-  registerMemoryDelete(pi, settings);
+  registerMemoryDelete(pi, settings, onOwnMutation);
 }
