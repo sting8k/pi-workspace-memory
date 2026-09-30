@@ -348,6 +348,23 @@ export function registerMemoryRead(pi: ExtensionAPI, settings: MemoryMdSettings)
   });
 }
 
+const MAX_SUMMARY_CHARS = 300;
+const MAX_DESCRIPTION_CHARS = 160;
+
+// Length limits apply to the structured input of this write only; stored values on disk are never re-checked.
+function assertFieldLengths(description: string, summary?: string): void {
+  for (const [field, value, max] of [
+    ["description", description, MAX_DESCRIPTION_CHARS],
+    ["summary", summary, MAX_SUMMARY_CHARS],
+  ] as const) {
+    if (value && value.length > max) {
+      throw new Error(
+        `${field} is ${value.length} chars (max ${max}). Keep it to one short sentence and move longer text to claims, facts, notes, or content.`,
+      );
+    }
+  }
+}
+
 export function registerMemoryWrite(pi: ExtensionAPI, settings: MemoryMdSettings, onOwnMutation?: () => void): void {
   pi.registerTool({
     name: "memory_write",
@@ -355,6 +372,9 @@ export function registerMemoryWrite(pi: ExtensionAPI, settings: MemoryMdSettings
     description:
       "Create or replace a structured project memory record. Logical state/ and events/ paths are stored under records/<stable-id>.md. " +
       "Prefer summary, concepts, claims, facts, relations, and optional notes over long prose. " +
+      "state = current truth: overwrite the same id instead of adding snapshots. " +
+      "event = a milestone, decision, or result worth recalling later, not a per-action log. " +
+      "Never store session-local details (pids, /tmp paths, idle/busy status, unpushed SHAs). " +
       'To merge N records into one, write the distilled record with supersedes: ["@a", "@b", ...]; the new record is written first, then each listed record is marked superseded so it drops out of injection and listings. ' +
       "The first write in a project creates the local memory structure automatically.",
     parameters: Type.Object({
@@ -364,8 +384,14 @@ export function registerMemoryWrite(pi: ExtensionAPI, settings: MemoryMdSettings
       content: Type.Optional(
         Type.String({ description: "Full Markdown content; optional when structured fields are provided" }),
       ),
-      description: Type.String({ description: "Concise purpose shown in the recent-memory index" }),
-      summary: Type.Optional(Type.String({ description: "One-sentence semantic summary for compact reads" })),
+      description: Type.String({
+        description: `Concise purpose shown in the recent-memory index (max ${MAX_DESCRIPTION_CHARS} chars)`,
+      }),
+      summary: Type.Optional(
+        Type.String({
+          description: `One-sentence semantic summary for compact reads (max ${MAX_SUMMARY_CHARS} chars)`,
+        }),
+      ),
       concepts: Type.Optional(Type.Array(Type.String({ description: "Core concepts captured by this memory" }))),
       claims: Type.Optional(Type.Array(Type.String({ description: "Important conclusions or decisions" }))),
       facts: Type.Optional(
@@ -423,6 +449,7 @@ export function registerMemoryWrite(pi: ExtensionAPI, settings: MemoryMdSettings
       const memoryDir = getMemoryDir(settings, ctx.cwd);
 
       try {
+        assertFieldLengths(description, summary);
         // Auto-init: the first write in a project creates records/ plus the default records.
         const initialized = ensureProjectMemoryInitialized(memoryDir);
 
@@ -785,6 +812,7 @@ export function registerMemoryDelete(pi: ExtensionAPI, settings: MemoryMdSetting
 
 const MAX_CLUSTER_WARNINGS = 5;
 const DEFAULT_LIST_LIMIT = 50;
+const MAX_LIST_LIMIT = 200;
 
 // Cluster warnings replace the old memory_check discovery: state records sharing a canonical
 // concept are reported with a ready-to-copy merge call (memory_write + supersedes). Only the
@@ -831,7 +859,7 @@ function buildMemoryListResult(
       supersededBy: entry.supersededBy,
     }));
   const total = allFiles.length;
-  const pageSize = Math.max(1, Math.floor(limit));
+  const pageSize = Math.min(MAX_LIST_LIMIT, Math.max(1, Math.floor(limit)));
   const pageNumber = Math.max(1, Math.floor(page));
   const pages = Math.max(1, Math.ceil(total / pageSize));
   const start = (pageNumber - 1) * pageSize;
@@ -904,7 +932,13 @@ export function registerMemorySearch(pi: ExtensionAPI, settings: MemoryMdSetting
       includeSuperseded: Type.Optional(
         Type.Boolean({ description: "Include records hidden because a newer record supersedes them" }),
       ),
-      limit: Type.Optional(Type.Integer({ minimum: 1, description: "List mode only: records per page (default 50)" })),
+      limit: Type.Optional(
+        Type.Integer({
+          minimum: 1,
+          maximum: MAX_LIST_LIMIT,
+          description: `List mode only: records per page (default ${DEFAULT_LIST_LIMIT}, max ${MAX_LIST_LIMIT})`,
+        }),
+      ),
       page: Type.Optional(Type.Integer({ minimum: 1, description: "List mode only: 1-based page number (default 1)" })),
     }),
 

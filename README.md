@@ -62,13 +62,14 @@ relation.follow_up -> @event.next-investigation
 <!-- /memory:facts -->
 ```
 
+- **Field limits** — a write is rejected when its `summary` exceeds 300 chars or its `description` exceeds 160; longer text belongs in `claims`, `facts`, `notes`, or `content`. Only the input of that write is checked, so already-stored long values stay readable. States hold current truth (overwrite in place); events record milestones, decisions, or results, not per-action logs.
 - **Overwrite diff** — replacing an existing record returns a compact line diff; fresh creates keep the plain response.
 - **Sensitive** — `sensitive: true` blocks auto-injection; sensitive-looking content (keys, tokens, passwords) is flagged with a warning, not rejected. The flag is recomputed on overwrite.
 - **Supersedes** (manual compaction) — `supersedes: ["@a", "@b"]` validates every ID before touching disk, writes the distilled record, then marks each target `supersededBy`. Hiding is derived at read time: a record stays hidden only while its superseder exists, deleting the superseder resurrects it, and writing to a hidden record clears the marker.
 - **Pre-write dedup (state creates only)** — an ID-family match (`-v2`, `-final`, date suffix, …) routes to an overwrite; concept containment (one set contains the other) rejects with a hint naming the similar record. `forceCreate: true` or a non-empty `supersedes` bypasses both. Events are never deduped.
 - **Dated state IDs refused** — dates belong to events; the error suggests `kind: "event"` or `forceCreate: true`.
 
-`memory_search` hides superseded records by default (`includeSuperseded: true` to list them); list mode (no query) shows records newest first, `limit` (default 50) per `page` with a ready-to-copy next-page call, and on page 1 appends up to 5 cluster warnings — state records sharing a concept with 4+ members, never events — each with a ready-to-copy merge call. `memory_read` reads hidden records and appends a supersede note. The catalog rebuilds entirely from frontmatter; no migration needed.
+`memory_search` hides superseded records by default (`includeSuperseded: true` to list them); list mode (no query) shows records newest first, `limit` (default 50, max 200) per `page` with a ready-to-copy next-page call, and on page 1 appends up to 5 cluster warnings — state records sharing a concept with 4+ members, never events — each with a ready-to-copy merge call. `memory_read` reads hidden records and appends a supersede note. The catalog rebuilds entirely from frontmatter; no migration needed.
 
 ## Configuration
 

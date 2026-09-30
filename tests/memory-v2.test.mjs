@@ -1766,6 +1766,57 @@ test("memory_search list mode pages newest first with an exact next-page call", 
     const last = await run({ limit: 4, page: 2 });
     assert.equal(last.details.files.length, 2);
     assert.doesNotMatch(last.content[0].text, /More:/);
+
+    assert.equal((await run({ limit: 500 })).details.limit, 200);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("memory_write rejects over-long summary and description but not stored long values", async () => {
+  const { root, workspace, settings } = fixture();
+  try {
+    const { pi, tools } = fakePi();
+    registerMemoryWrite(pi, settings);
+    const signal = toolSignal();
+    const cwd = { cwd: workspace };
+    const write = (args) => tools.get("memory_write").execute("w", args, signal, () => {}, cwd);
+    const memoryDir = getMemoryDir(settings, workspace);
+
+    const longSummary = await write({
+      path: "state/limits.md",
+      kind: "state",
+      description: "Limits",
+      summary: "s".repeat(301),
+    });
+    assert.match(longSummary.content[0].text, /summary is 301 chars \(max 300\).*claims, facts, notes, or content/);
+    assert.ok(!fs.existsSync(path.join(memoryDir, "records", "state.limits.md")));
+
+    const longDescription = await write({
+      path: "state/limits.md",
+      kind: "state",
+      description: "d".repeat(161),
+      claims: ["x"],
+    });
+    assert.match(longDescription.content[0].text, /description is 161 chars \(max 160\)/);
+    assert.ok(!fs.existsSync(path.join(memoryDir, "records", "state.limits.md")));
+
+    // a legacy record with a long stored summary stays readable and can be overwritten without passing summary
+    writeMemoryFile(path.join(memoryDir, "records", "state.legacy.md"), "# Legacy\n", {
+      id: "state.legacy",
+      kind: "state",
+      description: "Legacy",
+      summary: "L".repeat(500),
+    });
+    upsertMemoryCatalog(memoryDir, path.join(memoryDir, "records", "state.legacy.md"));
+    const overwrite = await write({
+      path: "state/legacy.md",
+      kind: "state",
+      description: "Legacy updated",
+      claims: ["fresh"],
+    });
+    assert.doesNotMatch(overwrite.content[0].text, /max 300/);
+    assert.match(fs.readFileSync(path.join(memoryDir, "records", "state.legacy.md"), "utf-8"), /fresh/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
