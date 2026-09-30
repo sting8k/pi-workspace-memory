@@ -41,7 +41,7 @@ npx tsc --noEmit
 npm test
 ```
 
-Releases are tag-driven. Pushing a tag `v*` that matches `package.json` version runs the checks, then creates a GitHub Release with generated notes. Nothing publishes to npm; installs are `pi install git:github.com/sting8k/pi-workspace-memory`.
+Releases are tag-driven. Pushing a tag `v*` that matches `package.json` version runs the checks, then creates a GitHub Release whose notes are the `## vX.Y.Z` section of `CHANGELOG.md` (the release fails if that section is missing). Nothing publishes to npm; installs are `pi install git:github.com/sting8k/pi-workspace-memory`.
 
 ## Durable Layer
 
