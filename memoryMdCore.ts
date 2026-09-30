@@ -222,6 +222,7 @@ function writeConceptDictionary(memoryDir: string, dictionary: ConceptDictionary
 }
 
 export function rebuildConceptDictionary(memoryDir: string): ConceptDictionary {
+  if (!fs.existsSync(memoryDir)) return { version: 1, concepts: [], aliases: {} };
   const concepts = new Set<string>();
   for (const filePath of listMemoryFiles(memoryDir)) {
     const memory = readMemoryFile(filePath);
@@ -1011,7 +1012,8 @@ function appendPrunedLog(memoryDir: string, pruned: PrunedRecordInfo[]): void {
 
 /**
  * Delete superseded tombstones older than `pruneAfterDays` (marker age, not record age).
- * Legacy markers without `supersededAt` are kept — their clock starts on the next re-mark.
+ * Legacy markers without `supersededAt` age by the file's mtime instead of being rewritten: a
+ * tombstone's last write is at least as late as its marking, so this can only delay a prune.
  * Returns the pruned records for logging by the caller.
  */
 export function sweepPrunableMemory(memoryDir: string, pruneAfterDays: number): PrunedRecordInfo[] {
@@ -1025,8 +1027,8 @@ export function sweepPrunableMemory(memoryDir: string, pruneAfterDays: number): 
   for (const entry of getMemoryCatalog(memoryDir)) {
     if (!entry.supersededBy || !supersededByExists(memoryDir, entry.supersededBy)) continue;
     const memory = readMemoryFile(path.join(memoryDir, entry.path));
-    const supersededAt = memory?.frontmatter.supersededAt;
-    if (!supersededAt) continue;
+    if (!memory) continue;
+    const supersededAt = memory.frontmatter.supersededAt ?? new Date(entry.mtimeMs).toISOString();
     const ts = Date.parse(supersededAt);
     if (!Number.isFinite(ts) || ts >= cutoff) continue;
     prunable.set(entry.id, {
@@ -1308,6 +1310,8 @@ function catalogIsFresh(memoryDir: string, entries: MemoryCatalogEntry[]): boole
 }
 
 export function rebuildMemoryCatalog(memoryDir: string): MemoryCatalogEntry[] {
+  // Reads rebuild lazily; a project that has no memory yet must stay absent, not get an empty catalog.
+  if (!fs.existsSync(memoryDir)) return [];
   const entries = listMemoryFiles(memoryDir)
     .map((filePath) => catalogEntryFromMemory(memoryDir, filePath))
     .filter((entry): entry is MemoryCatalogEntry => Boolean(entry))
@@ -1483,44 +1487,13 @@ function ensureDirectoryStructure(memoryDir: string): void {
   fs.mkdirSync(path.join(memoryDir, MEMORY_RECORDS_DIR), { recursive: true });
 }
 
-function createDefaultFiles(memoryDir: string): void {
-  const today = getCurrentDate();
-  const defaults: Array<{ id: string; description: string; tags: string[]; content: string }> = [
-    {
-      id: "state.identity",
-      description: "Project-specific user identity and background",
-      tags: ["user", "identity"],
-      content: `# User Identity\n\n${MEMORY_FACTS_START}\nuser.identity = "Customize this fact"\n${MEMORY_FACTS_END}`,
-    },
-    {
-      id: "state.preferences",
-      description: "Project-specific user and collaboration preferences",
-      tags: ["user", "preferences"],
-      content: `# User Preferences\n\n${MEMORY_FACTS_START}\ncommunication.style = "concise"\n${MEMORY_FACTS_END}`,
-    },
-  ];
-
-  for (const entry of defaults) {
-    const filePath = recordPathForId(memoryDir, entry.id);
-    if (fs.existsSync(filePath)) continue;
-    writeMemoryFile(filePath, entry.content, {
-      description: entry.description,
-      tags: entry.tags,
-      created: today,
-      updated: today,
-    });
-    upsertMemoryCatalog(memoryDir, filePath);
-  }
-}
-
 /**
- * Auto-init: the first memory_write in a project creates the local records/ layout and the
- * default records. Local only - there is no remote clone step.
+ * Auto-init: the first memory_write in a project creates the local records/ layout only.
+ * Local only - there is no remote clone step.
  */
 export function ensureProjectMemoryInitialized(memoryDir: string): boolean {
   if (fs.existsSync(path.join(memoryDir, MEMORY_RECORDS_DIR))) return false;
   ensureDirectoryStructure(memoryDir);
-  createDefaultFiles(memoryDir);
   return true;
 }
 

@@ -452,7 +452,7 @@ export function registerMemoryWrite(pi: ExtensionAPI, settings: MemoryMdSettings
 
       try {
         assertFieldLengths(description, summary);
-        // Auto-init: the first write in a project creates records/ plus the default records.
+        // Auto-init: the first write in a project creates records/.
         const initialized = ensureProjectMemoryInitialized(memoryDir);
 
         const hasStructuredFields = Boolean(

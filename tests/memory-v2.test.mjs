@@ -1973,9 +1973,10 @@ test("memory_write auto-initializes project memory on the first write only", asy
     assert.match(first.content[0].text, /^Memory file written: records\/event\.first\.md \(@event\.first\)/);
     assert.match(first.content[0].text, /Initialized project memory:/);
     assert.equal(fs.existsSync(path.join(memoryDir, "records")), true);
-    for (const id of ["state.identity", "state.preferences"]) {
-      assert.ok(findMemoryFileById(memoryDir, `@${id}`), `${id} default record missing`);
-    }
+    assert.deepEqual(
+      getMemoryCatalog(memoryDir).map((entry) => entry.id),
+      ["event.first"],
+    );
 
     const second = await tools
       .get("memory_write")
@@ -2188,9 +2189,8 @@ test("memory_search without a query lists records and filters by kind", async ()
 
     const all = await tools.get("memory_search").execute("l1", {}, signal, () => {}, cwd);
     assert.equal(all.details.mode, "list");
-    // two written records plus the two default records created by auto-init
-    assert.equal(all.details.count, 4);
-    assert.match(all.content[0].text, /Memory files \(showing 1-4 of 4, newest first\):/);
+    assert.equal(all.details.count, 2);
+    assert.match(all.content[0].text, /Memory files \(showing 1-2 of 2, newest first\):/);
     assert.match(all.content[0].text, /records\/event\.deploy\.md \(@event\.deploy\)\n {4}event: Deploy run/);
     assert.match(all.content[0].text, /records\/state\.runtime\.md \(@state\.runtime\)\n {4}state: Runtime config/);
     assert.doesNotMatch(all.content[0].text, /Cluster warnings/);
@@ -2288,6 +2288,46 @@ test("sweep prunes aged tombstones, keeps the distill, and never resurrects chai
     assert.match(log, /state\.b\t/);
     assert.match(log, /state\.c\t/);
     assert.match(log, /supersededBy=state\.a/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("sweep ages legacy tombstones without supersededAt by file mtime", () => {
+  const { root, workspace, settings } = fixture();
+  try {
+    const memoryDir = getMemoryDir(settings, workspace);
+    fs.mkdirSync(path.join(memoryDir, "records"), { recursive: true });
+    writeTombstone(memoryDir, "state.live", "state", undefined, undefined);
+    const stale = writeTombstone(memoryDir, "state.stale", "state", "state.live", undefined);
+    const fresh = writeTombstone(memoryDir, "state.fresh", "state", "state.live", undefined);
+    const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(stale, monthAgo, monthAgo);
+
+    const pruned = sweepPrunableMemory(memoryDir, 14);
+    assert.deepEqual(
+      pruned.map((info) => info.id),
+      ["state.stale"],
+    );
+    assert.equal(fs.existsSync(stale), false);
+    assert.equal(fs.existsSync(fresh), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("memory_search on a project without memory leaves the project dir absent", async () => {
+  const { root, workspace, settings } = fixture();
+  try {
+    const { pi, tools } = fakePi();
+    registerMemorySearch(pi, settings);
+    const memoryDir = getMemoryDir(settings, workspace);
+    const run = (args) => tools.get("memory_search").execute("r", args, toolSignal(), () => {}, { cwd: workspace });
+
+    assert.equal((await run({})).details.count, 0);
+    await run({ query: "anything" });
+    await run({ query: "topic", searchIn: "concepts" });
+    assert.equal(fs.existsSync(memoryDir), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

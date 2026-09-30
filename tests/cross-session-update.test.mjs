@@ -49,6 +49,8 @@ function writeRecord(memoryDir, id, description, extra = {}) {
 test("signature diff detects add, update, and remove", () => {
   const { memoryDir } = fixture();
   ensureProjectMemoryInitialized(memoryDir);
+  writeRecord(memoryDir, "state.identity", "Identity");
+  writeRecord(memoryDir, "state.preferences", "Preferences");
   const before = readCatalogSignature(memoryDir);
 
   writeRecord(memoryDir, "event.foreign", "Foreign write");
