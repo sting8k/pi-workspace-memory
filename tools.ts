@@ -22,6 +22,7 @@ import {
   isDatedMemoryId,
   markRecordSuperseded,
   memoryFileFromCatalogEntry,
+  memoryTimestamp,
   normalizeConceptSearchQuery,
   normalizeMemoryConcepts,
   parseMemoryFacts,
@@ -782,16 +783,22 @@ export function registerMemoryDelete(pi: ExtensionAPI, settings: MemoryMdSetting
   });
 }
 
-// Cluster warnings replace the old memory_check discovery: same-kind records sharing a canonical
-// concept are reported with a ready-to-copy merge call (memory_write + supersedes).
+const MAX_CLUSTER_WARNINGS = 5;
+const DEFAULT_LIST_LIMIT = 50;
+
+// Cluster warnings replace the old memory_check discovery: state records sharing a canonical
+// concept are reported with a ready-to-copy merge call (memory_write + supersedes). Only the
+// largest clusters are shown so the warning block stays bounded on big projects.
 function formatClusterWarnings(clusters: CompactClusterReport[]): string {
   if (!clusters.length) return "";
-  const sections = clusters.map((cluster) => {
+  const shown = clusters.slice(0, MAX_CLUSTER_WARNINGS);
+  const sections = shown.map((cluster) => {
     const ids = cluster.ids.map((id) => `@${id}`);
     const merge = `memory_write({ path: "state/${cluster.concept}-summary.md", description: "${cluster.concept} summary", supersedes: [${cluster.ids.map((id) => `"@${id}"`).join(", ")}] })`;
     return `- ${cluster.ids.length} ${cluster.kind} records share concept "${cluster.concept}", candidates for merge: [${ids.join(", ")}]\n  Merge: ${merge}`;
   });
-  return `\n\nCluster warnings (${clusters.length} cluster${clusters.length > 1 ? "s" : ""}):\n${sections.join("\n")}`;
+  const more = clusters.length > shown.length ? `\n- +${clusters.length - shown.length} more clusters` : "";
+  return `\n\nCluster warnings (${clusters.length} cluster${clusters.length > 1 ? "s" : ""}):\n${sections.join("\n")}${more}`;
 }
 
 // One label rule for both output modes: the supersede marker is shown only when the superseding
@@ -800,11 +807,22 @@ function supersededSuffix(memoryDir: string, supersededBy?: string): string {
   return supersededBy && supersededByExists(memoryDir, supersededBy) ? ` (superseded by @${supersededBy})` : "";
 }
 
-function buildMemoryListResult(memoryDir: string, kind?: "state" | "event", includeSuperseded?: boolean) {
+function buildMemoryListResult(
+  memoryDir: string,
+  kind?: "state" | "event",
+  includeSuperseded?: boolean,
+  page = 1,
+  limit = DEFAULT_LIST_LIMIT,
+) {
   const catalogEntries = getMemoryCatalog(memoryDir);
   const visibleEntries = includeSuperseded ? catalogEntries : filterSupersededEntries(memoryDir, catalogEntries);
-  const files = visibleEntries
+  const allFiles = visibleEntries
     .filter((entry) => !kind || entry.kind === kind)
+    .sort(
+      (a, b) =>
+        memoryTimestamp(path.join(memoryDir, b.path), b) - memoryTimestamp(path.join(memoryDir, a.path), a) ||
+        a.path.localeCompare(b.path),
+    )
     .map((entry) => ({
       path: entry.path,
       id: entry.id,
@@ -812,21 +830,38 @@ function buildMemoryListResult(memoryDir: string, kind?: "state" | "event", incl
       description: entry.description,
       supersededBy: entry.supersededBy,
     }));
+  const total = allFiles.length;
+  const pageSize = Math.max(1, Math.floor(limit));
+  const pageNumber = Math.max(1, Math.floor(page));
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  const start = (pageNumber - 1) * pageSize;
+  const files = allFiles.slice(start, start + pageSize);
   const list = files
     .map(
       (entry) =>
         `  - ${entry.path} (@${entry.id})${supersededSuffix(memoryDir, entry.supersededBy)}\n    ${entry.kind}: ${entry.description ?? "No description"}`,
     )
     .join("\n");
+  const nextArgs = [
+    `page: ${pageNumber + 1}`,
+    ...(pageSize !== DEFAULT_LIST_LIMIT ? [`limit: ${pageSize}`] : []),
+    ...(kind ? [`kind: "${kind}"`] : []),
+    ...(includeSuperseded ? ["includeSuperseded: true"] : []),
+  ];
+  const header =
+    !files.length && total
+      ? `Memory files: page ${pageNumber} is past the last page (${total} records, ${pages} page${pages > 1 ? "s" : ""}, ${pageSize} per page)`
+      : `Memory files (showing ${total ? start + 1 : 0}-${start + files.length} of ${total}, newest first)`;
+  const next = start + files.length < total ? `\n\nMore: memory_search({ ${nextArgs.join(", ")} })` : "";
   const clusters = findCompactClusters(memoryDir);
   return {
     content: [
       {
         type: "text" as const,
-        text: `Memory files (${files.length}):\n\n${list}${formatClusterWarnings(clusters)}`,
+        text: `${header}:\n\n${list}${next}${pageNumber === 1 ? formatClusterWarnings(clusters) : ""}`,
       },
     ],
-    details: { mode: "list", files, count: files.length, clusters },
+    details: { mode: "list", files, count: files.length, total, page: pageNumber, limit: pageSize, clusters },
   };
 }
 
@@ -835,15 +870,15 @@ export function registerMemorySearch(pi: ExtensionAPI, settings: MemoryMdSetting
     name: "memory_search",
     label: "Memory Search",
     description:
-      "Search memory files by content, tags, or description, or omit query to list every record with its @id." +
+      "Search memory files by content, tags, or description, or omit query to list records with their @id." +
       " Supports regex (e.g. 'typescript|javascript', 'fail.*build')." +
       " Multi-word queries use OR logic ranked by relevance -- use keywords, not full sentences." +
-      " The list mode also reports clusters of records that should be merged into one record.",
+      " Without a query it lists records newest first, `limit` (default 50) per `page`, and reports state-record clusters that could be merged into one record.",
     parameters: Type.Object({
       query: Type.Optional(
         Type.String({
           description:
-            "Search terms or regex pattern (e.g. 'hook|inject', 'fail.*build'). Multi-word = OR ranked by relevance. Omit to list all records.",
+            "Search terms or regex pattern (e.g. 'hook|inject', 'fail.*build'). Multi-word = OR ranked by relevance. Omit to list records (see limit/page).",
         }),
       ),
       searchIn: Type.Optional(
@@ -869,6 +904,8 @@ export function registerMemorySearch(pi: ExtensionAPI, settings: MemoryMdSetting
       includeSuperseded: Type.Optional(
         Type.Boolean({ description: "Include records hidden because a newer record supersedes them" }),
       ),
+      limit: Type.Optional(Type.Integer({ minimum: 1, description: "List mode only: records per page (default 50)" })),
+      page: Type.Optional(Type.Integer({ minimum: 1, description: "List mode only: 1-based page number (default 1)" })),
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -877,16 +914,20 @@ export function registerMemorySearch(pi: ExtensionAPI, settings: MemoryMdSetting
         searchIn = "all",
         kind,
         includeSuperseded,
+        limit,
+        page,
       } = params as {
         query?: string;
         searchIn?: SearchField;
         kind?: "state" | "event";
         includeSuperseded?: boolean;
+        limit?: number;
+        page?: number;
       };
       const memoryDir = getMemoryDir(settings, ctx.cwd);
 
       try {
-        if (!query?.trim()) return buildMemoryListResult(memoryDir, kind, includeSuperseded);
+        if (!query?.trim()) return buildMemoryListResult(memoryDir, kind, includeSuperseded, page, limit);
 
         const catalogEntries = getMemoryCatalog(memoryDir);
         const visibleEntries = includeSuperseded ? catalogEntries : filterSupersededEntries(memoryDir, catalogEntries);

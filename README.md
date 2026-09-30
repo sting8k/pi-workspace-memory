@@ -13,7 +13,7 @@ Project-scoped Markdown memory for the Pi coding agent — durable state, report
  │                    modes: message-append | system-prompt | off
  │
  ├─ tools — the whole lifecycle in 4
- │   memory_search ── scan content/metadata; no query = list + merge hints
+ │   memory_search ── scan content/metadata; no query = paged list + merge hints
  │   memory_read ──── @id or path → full | summary | knowledge
  │   memory_write ─── create | overwrite (+diff) | merge via supersedes
  │   memory_delete ── remove one record + reconcile metadata
@@ -68,7 +68,7 @@ relation.follow_up -> @event.next-investigation
 - **Pre-write dedup (state creates only)** — an ID-family match (`-v2`, `-final`, date suffix, …) routes to an overwrite; concept containment (one set contains the other) rejects with a hint naming the similar record. `forceCreate: true` or a non-empty `supersedes` bypasses both. Events are never deduped.
 - **Dated state IDs refused** — dates belong to events; the error suggests `kind: "event"` or `forceCreate: true`.
 
-`memory_search` hides superseded records by default (`includeSuperseded: true` to list them); list mode appends cluster warnings — same-kind records sharing a concept with 4+ members — each with a ready-to-copy merge call. `memory_read` reads hidden records and appends a supersede note. The catalog rebuilds entirely from frontmatter; no migration needed.
+`memory_search` hides superseded records by default (`includeSuperseded: true` to list them); list mode (no query) shows records newest first, `limit` (default 50) per `page` with a ready-to-copy next-page call, and on page 1 appends up to 5 cluster warnings — state records sharing a concept with 4+ members, never events — each with a ready-to-copy merge call. `memory_read` reads hidden records and appends a supersede note. The catalog rebuilds entirely from frontmatter; no migration needed.
 
 ## Configuration
 

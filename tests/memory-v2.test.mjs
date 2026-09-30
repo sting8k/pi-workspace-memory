@@ -1735,6 +1735,70 @@ test("memory_search list mode reports cluster warnings for same-kind concept gro
   }
 });
 
+test("memory_search list mode pages newest first with an exact next-page call", async () => {
+  const { root, workspace, settings } = fixture();
+  try {
+    const { pi, tools } = fakePi();
+    registerMemorySearch(pi, settings);
+    const memoryDir = getMemoryDir(settings, workspace);
+    for (let day = 1; day <= 5; day++) {
+      writeDatedRecord(memoryDir, `event.run-${day}`, "event", "# Run", `2026-03-0${day}T00:00:00.000Z`);
+    }
+    writeDatedRecord(memoryDir, "state.newest", "state", "# S", "2026-04-01T00:00:00.000Z");
+    const run = (args) => tools.get("memory_search").execute("p", args, toolSignal(), () => {}, { cwd: workspace });
+
+    const first = await run({ limit: 2 });
+    assert.deepEqual(
+      first.details.files.map((file) => file.id),
+      ["state.newest", "event.run-5"],
+    );
+    assert.equal(first.details.total, 6);
+    assert.match(first.content[0].text, /showing 1-2 of 6, newest first/);
+    assert.match(first.content[0].text, /More: memory_search\(\{ page: 2, limit: 2 \}\)/);
+
+    const filtered = await run({ limit: 2, kind: "event", page: 2 });
+    assert.deepEqual(
+      filtered.details.files.map((file) => file.id),
+      ["event.run-3", "event.run-2"],
+    );
+    assert.match(filtered.content[0].text, /More: memory_search\(\{ page: 3, limit: 2, kind: "event" \}\)/);
+
+    const last = await run({ limit: 4, page: 2 });
+    assert.equal(last.details.files.length, 2);
+    assert.doesNotMatch(last.content[0].text, /More:/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("memory_search list mode never proposes merging events and bounds cluster warnings", async () => {
+  const { root, workspace, settings } = fixture();
+  try {
+    const { pi, tools } = fakePi();
+    registerMemorySearch(pi, settings);
+    const memoryDir = getMemoryDir(settings, workspace);
+    for (let i = 1; i <= 6; i++) {
+      writeDatedRecord(memoryDir, `event.noisy-${i}`, "event", "# E", "2026-03-01T00:00:00.000Z", ["noisy"]);
+    }
+    for (let c = 1; c <= 7; c++) {
+      for (let i = 1; i <= 4; i++) {
+        writeDatedRecord(memoryDir, `state.c${c}-${i}`, "state", "# S", "2026-03-01T00:00:00.000Z", [`topic-${c}`]);
+      }
+    }
+    const result = await tools
+      .get("memory_search")
+      .execute("c", { limit: 1 }, toolSignal(), () => {}, { cwd: workspace });
+    const text = result.content[0].text;
+    assert.doesNotMatch(text, /share concept "noisy"/);
+    assert.ok(result.details.clusters.every((cluster) => cluster.kind === "state"));
+    assert.equal(result.details.clusters.length, 7);
+    assert.equal((text.match(/records share concept/g) ?? []).length, 5);
+    assert.match(text, /\+2 more clusters/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("rebuildMemoryCatalog reconstructs supersededBy from frontmatter", async () => {
   const { root, workspace, settings } = fixture();
   try {
@@ -2039,7 +2103,7 @@ test("memory_search without a query lists records and filters by kind", async ()
     assert.equal(all.details.mode, "list");
     // two written records plus the two default records created by auto-init
     assert.equal(all.details.count, 4);
-    assert.match(all.content[0].text, /Memory files \(4\):/);
+    assert.match(all.content[0].text, /Memory files \(showing 1-4 of 4, newest first\):/);
     assert.match(all.content[0].text, /records\/event\.deploy\.md \(@event\.deploy\)\n {4}event: Deploy run/);
     assert.match(all.content[0].text, /records\/state\.runtime\.md \(@state\.runtime\)\n {4}state: Runtime config/);
     assert.doesNotMatch(all.content[0].text, /Cluster warnings/);

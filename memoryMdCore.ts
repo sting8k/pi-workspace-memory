@@ -1171,9 +1171,10 @@ export function findConceptContainmentDuplicate(
 }
 
 /**
- * Cluster discovery: group records by (kind, canonical concept) and report clusters of at
+ * Cluster discovery: group state records by (kind, canonical concept) and report clusters of at
  * least minSize records as merge candidates for memory_write + supersedes. Read-only;
- * superseded records are already being phased out so they are excluded.
+ * superseded records are already being phased out so they are excluded. Events are append-only
+ * history, never merge candidates, so they are skipped.
  */
 export interface CompactClusterReport {
   kind: MemoryKind;
@@ -1185,6 +1186,7 @@ export function findCompactClusters(memoryDir: string, minSize = 4): CompactClus
   const entries = filterSupersededEntries(memoryDir, getMemoryCatalog(memoryDir));
   const byConcept = new Map<string, Map<MemoryKind, string[]>>();
   for (const entry of entries) {
+    if (entry.kind !== "state") continue;
     for (const concept of entry.concepts) {
       const normalized = normalizeConceptLabel(concept);
       if (!normalized) continue;
@@ -1469,7 +1471,7 @@ export function ensureProjectMemoryInitialized(memoryDir: string): boolean {
 const MAX_INJECTED_MEMORY_FILES = 10;
 const STATE_INJECTION_QUOTA = 5;
 
-function memoryTimestamp(filePath: string, frontmatter: MemoryFrontmatter): number {
+export function memoryTimestamp(filePath: string, frontmatter: MemoryFrontmatter): number {
   for (const value of [frontmatter.updated, frontmatter.created]) {
     if (!value) continue;
     const timestamp = Date.parse(value);
