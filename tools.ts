@@ -15,6 +15,7 @@ import {
   findConceptContainmentDuplicate,
   findIdFamilyRoute,
   findMemoryFileById,
+  findSimilarStates,
   formatMemoryRead,
   getCurrentDate,
   getMemoryCatalog,
@@ -348,6 +349,7 @@ export function registerMemoryRead(pi: ExtensionAPI, settings: MemoryMdSettings)
   });
 }
 
+const MAX_SIMILAR_STATE_HINTS = 3;
 const MAX_SUMMARY_CHARS = 300;
 const MAX_DESCRIPTION_CHARS = 160;
 
@@ -515,7 +517,8 @@ export function registerMemoryWrite(pi: ExtensionAPI, settings: MemoryMdSettings
         }
 
         // Pre-write dedup for state creates only (events are append-only and untouched):
-        // deterministic ID-family routes to an overwrite; concept containment rejects with a hint.
+        // deterministic ID-family routes to an overwrite; concept containment and ID-token similarity
+        // reject with a hint naming the existing record(s).
         // A non-empty supersedes list is itself the dedup decision, so it skips both checks.
         let routedTo: string | null = null;
         if (!forceCreate && !supersedes?.length && !targetExists && target.kind === "state") {
@@ -530,6 +533,15 @@ export function registerMemoryWrite(pi: ExtensionAPI, settings: MemoryMdSettings
             if (containment) {
               throw new Error(
                 `Similar state record @${containment.id} exists (concepts: ${containment.concepts.join(", ")}). Overwrite it by writing to '${containment.path}', or pass forceCreate:true to create a separate record.`,
+              );
+            }
+            const similar = findSimilarStates(memoryDir, target.id).slice(0, MAX_SIMILAR_STATE_HINTS);
+            if (similar.length) {
+              const lines = similar.map(
+                (entry) => `- @${entry.id} ('${entry.path}'): ${(entry.description ?? "No description").slice(0, 160)}`,
+              );
+              throw new Error(
+                `Similar state records exist:\n${lines.join("\n")}\nOverwrite one by writing to its path, or supersede it, or pass forceCreate:true to create a separate record.`,
               );
             }
           }

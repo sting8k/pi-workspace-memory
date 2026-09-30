@@ -1170,6 +1170,62 @@ export function findConceptContainmentDuplicate(
   return { id: best.entry.id, path: best.entry.path, concepts: best.entry.concepts };
 }
 
+const SIMILARITY_STOPWORDS = new Set(["final", "new", "latest", "done", "current", "status", "state"]);
+const SIMILARITY_COMMON_TOKEN_SHARE = 0.5;
+const SIMILARITY_COMMON_MIN_RECORDS = 8;
+
+function similarityTokens(text: string): Set<string> {
+  return new Set(
+    text
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/đ/g, "d")
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((token) => token.length >= 2 && !SIMILARITY_STOPWORDS.has(token))
+      .map((token) => (token.length > 3 && token.endsWith("s") ? token.slice(0, -1) : token)),
+  );
+}
+
+/**
+ * Similar-state candidates for a state create, without relying on concepts: same ID-token
+ * containment idea as concept containment. The distinctive tokens of one ID must all appear in the
+ * other's (`arena` vs `arena-meta`). The project name and tokens that most states already share
+ * are ignored, since they say nothing about topic. Best first: more shared tokens, then ID order.
+ * Read-only; callers reject with a hint. Description text was tried as a second signal and only
+ * added unrelated matches on real data, so it is not used.
+ */
+export function rankSimilarStates(
+  entries: MemoryCatalogEntry[],
+  projectSlug: string,
+  newId: string,
+): MemoryCatalogEntry[] {
+  const states = entries.filter((entry) => entry.kind === "state");
+  const idTokens = (id: string) => similarityTokens(id.replace(/^(?:state|event)\./, ""));
+  const ignored = new Set(similarityTokens(projectSlug));
+  if (states.length >= SIMILARITY_COMMON_MIN_RECORDS) {
+    const df = new Map<string, number>();
+    for (const entry of states) for (const token of idTokens(entry.id)) df.set(token, (df.get(token) ?? 0) + 1);
+    for (const [token, count] of df) if (count / states.length > SIMILARITY_COMMON_TOKEN_SHARE) ignored.add(token);
+  }
+  const distinctive = (id: string) => new Set([...idTokens(id)].filter((token) => !ignored.has(token)));
+
+  const newTokens = distinctive(newId);
+  const scored: Array<{ entry: MemoryCatalogEntry; shared: number }> = [];
+  for (const entry of states) {
+    const oldTokens = distinctive(entry.id);
+    const shared = [...newTokens].filter((token) => oldTokens.has(token)).length;
+    if (shared > 0 && shared === Math.min(newTokens.size, oldTokens.size)) scored.push({ entry, shared });
+  }
+  return scored.sort((a, b) => b.shared - a.shared || a.entry.id.localeCompare(b.entry.id)).map((item) => item.entry);
+}
+
+/** Live states similar to a state create's new ID. */
+export function findSimilarStates(memoryDir: string, newId: string): MemoryCatalogEntry[] {
+  const entries = filterSupersededEntries(memoryDir, getMemoryCatalog(memoryDir));
+  return rankSimilarStates(entries, path.basename(memoryDir), newId);
+}
+
 /**
  * Cluster discovery: group state records by (kind, canonical concept) and report clusters of at
  * least minSize records as merge candidates for memory_write + supersedes. Read-only;

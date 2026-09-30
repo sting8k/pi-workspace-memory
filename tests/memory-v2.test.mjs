@@ -1993,6 +1993,42 @@ test("memory_write auto-initializes project memory on the first write only", asy
   }
 });
 
+test("pre-write dedup: similar state ID without concepts is rejected with candidates, unrelated passes", async () => {
+  const { root, workspace, settings } = fixture();
+  try {
+    const { pi, tools } = fakePi();
+    registerMemoryWrite(pi, settings);
+    const signal = toolSignal();
+    const cwd = { cwd: workspace };
+    const write = (args) => tools.get("memory_write").execute("w", args, signal, () => {}, cwd);
+    const memoryDir = getMemoryDir(settings, workspace);
+
+    await write({ path: "state/arena.md", kind: "state", description: "Arena rules", claims: ["a"] });
+
+    const similar = await write({
+      path: "state/my-project-arena-meta.md",
+      kind: "state",
+      description: "Arena meta recon",
+      claims: ["b"],
+    });
+    assert.match(similar.content[0].text, /Similar state records exist:/);
+    assert.match(similar.content[0].text, /- @state\.arena \('records\/state\.arena\.md'\): Arena rules/);
+    assert.match(similar.content[0].text, /supersede it, or pass forceCreate:true/);
+    assert.ok(!fs.existsSync(path.join(memoryDir, "records", "state.my-project-arena-meta.md")));
+
+    const unrelated = await write({
+      path: "state/billing-webhooks.md",
+      kind: "state",
+      description: "Billing webhooks",
+      claims: ["c"],
+    });
+    assert.doesNotMatch(unrelated.content[0].text, /Similar state/);
+    assert.ok(fs.existsSync(path.join(memoryDir, "records", "state.billing-webhooks.md")));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("memory_write supersedes bypasses ID-family route and containment reject", async () => {
   const { root, workspace, settings } = fixture();
   try {
