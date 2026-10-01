@@ -19,13 +19,11 @@
     "ai-memory",
     "coding-agent"
   ],
-  "dependencies": {
-    "@biomejs/biome": "^2.4.10",
-    "@sinclair/typebox": "^0.34.41"
-  },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.10",
     "@earendil-works/pi-coding-agent": "^0.78.0",
     "@earendil-works/pi-tui": "^0.78.0",
+    "@sinclair/typebox": "^0.34.41",
     "@types/node": "^20.0.0",
     "typescript": "^5.0.0"
   },
@@ -51,7 +49,8 @@
     "test": "rm -rf .test-dist && tsc --noEmit false --outDir .test-dist && node --test tests/*.test.mjs; status=$?; rm -rf .test-dist; exit $status"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.78.0",
-    "@earendil-works/pi-tui": "^0.78.0"
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "@sinclair/typebox": "*"
   }
 }
