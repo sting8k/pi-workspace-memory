@@ -2,6 +2,11 @@
 
 Each release's GitHub notes are this file's section whose heading matches the tag. Add the section before tagging.
 
+## v0.6.1 - 2026-10-01
+
+- Fix the pi "Extension issues" warning on install: `@sinclair/typebox` is now a `"*"` peer dependency (provided by pi) instead of a dependency, so no second copy is installed. The pi peers use `"*"` too.
+- `@biomejs/biome` moved to devDependencies; installing the extension no longer downloads it.
+
 ## v0.6.0 - 2026-09-30
 
 Fixes found by auditing two months of real memory data (63 projects, ~1.8k records).
