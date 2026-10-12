@@ -85,6 +85,12 @@ relation.follow_up -> @event.next-investigation
 }
 ```
 
+`injection` controls how memory reaches the agent:
+
+- `message-append` (default): on the first turn, a hidden message carries the project memory list; later turns append a compact `+ ~ −` notice only when another session changed memory. The system prompt never changes, so provider prompt caching keeps working. The list itself is a session-start snapshot; `/memory-refresh` re-sends it.
+- `system-prompt`: the list is rebuilt from disk every turn and appended to the system prompt, so mid-session writes show up immediately, at the cost of prompt-cache misses whenever memory changes. No cross-session notices (the list is already current).
+- `off`: nothing is injected; the tools and commands still work, and the agent finds memory only through `memory_search` / `memory_read`.
+
 The legacy `pi-memory-md` key is still honored as a fallback.
 
 ## Development
