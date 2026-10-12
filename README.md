@@ -53,7 +53,7 @@ Default to `event`; use `state` only for knowledge still true tomorrow. Update s
 
 ## Write semantics
 
-`memory_write` generates compact Markdown from structured fields — `summary`, `concepts`, `claims`, `facts` (JSON scalars/arrays; nested objects flatten to dotted keys), `relations` (`@id` links), `notes` (loaded only in full view). One machine-checkable facts block per record:
+`memory_write` generates compact Markdown from structured fields — `summary`, `concepts`, `claims`, `facts` (JSON scalars/arrays; nested objects flatten to dotted keys), `relations` (`@id` links to existing records in the same project; unknown or self targets are rejected), `notes` (loaded only in full view). One machine-checkable facts block per record:
 
 ```markdown
 <!-- memory:facts:v1 -->
@@ -69,7 +69,7 @@ relation.follow_up -> @event.next-investigation
 - **Pre-write dedup (state creates only)** — an ID-family match (`-v2`, `-final`, date suffix, …) routes to an overwrite; concept containment (one set contains the other) or a similar ID (all distinctive ID tokens of one appear in the other, ignoring the project name and tokens most states share, e.g. `arena` vs `arena-meta`) rejects with a hint naming up to 3 similar records. `forceCreate: true` or a non-empty `supersedes` bypasses both. Events are never deduped.
 - **Dated state IDs refused** — dates belong to events; the error suggests `kind: "event"` or `forceCreate: true`.
 
-`memory_search` hides superseded records by default (`includeSuperseded: true` to list them); list mode (no query) shows records newest first, `limit` (default 50, max 200) per `page` with a ready-to-copy next-page call, and on page 1 appends up to 5 cluster warnings — state records sharing a concept with 4+ members, never events — each with a ready-to-copy merge call. `memory_read` reads hidden records and appends a supersede note. The catalog rebuilds entirely from frontmatter; no migration needed.
+`memory_search` hides superseded records by default (`includeSuperseded: true` to list them); list mode (no query) shows records newest first, `limit` (default 50, max 200) per `page` with a ready-to-copy next-page call, and on page 1 appends up to 5 cluster warnings — state records sharing a concept with 4+ members, never events — each with a ready-to-copy merge call. `memory_read` reads hidden records and appends a supersede note. In full and knowledge views it also lists "Referenced by": live records whose relations point at this one, grouped by relation name (up to 20). The catalog rebuilds entirely from frontmatter; no migration needed.
 
 ## Configuration
 

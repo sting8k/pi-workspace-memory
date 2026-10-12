@@ -2604,3 +2604,39 @@ test("exact-concept search ranks by recency when all hits tie at term count", ()
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("relations must target existing records and show up as backlinks on read", async () => {
+  const { root, workspace, settings } = fixture();
+  try {
+    const { pi, tools } = fakePi();
+    registerMemoryWrite(pi, settings);
+    registerMemoryRead(pi, settings);
+    const signal = toolSignal();
+    const cwd = { cwd: workspace };
+    const write = (id, fields) =>
+      tools
+        .get("memory_write")
+        .execute(id, { path: `events/${id}.md`, kind: "event", description: id, ...fields }, signal, () => {}, cwd);
+
+    await write("base", { claims: ["base"] });
+
+    // A label that is not a record id and a self-reference are both refused, and nothing is written.
+    const bad = await write("bad", { relations: { vm: "vuln-017-a", follows: "@event.bad" } });
+    assert.equal(bad.details.error, true);
+    assert.match(bad.content[0].text, /relation\.vm -> @vuln-017-a \(not found\)/);
+    assert.match(bad.content[0].text, /relation\.follows -> @event\.bad \(points at this record\)/);
+    assert.equal(findMemoryFileById(getMemoryDir(settings, workspace), "@event.bad"), null);
+
+    await write("b", { claims: ["b"], relations: { follows: "@event.base" } });
+    await write("a", { claims: ["a"], relations: { follows: "@event.base", corrects: "event.base" } });
+
+    const read = await tools.get("memory_read").execute("r", { path: "@event.base" }, signal, () => {}, cwd);
+    assert.match(read.content[0].text, /Referenced by:\n- corrects: @event\.a\n- follows: @event\.a, @event\.b$/);
+    const summary = await tools
+      .get("memory_read")
+      .execute("r2", { path: "@event.base", view: "summary" }, signal, () => {}, cwd);
+    assert.doesNotMatch(summary.content[0].text, /Referenced by/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -934,6 +934,31 @@ export function supersededByExists(memoryDir: string, id: string): boolean {
   return getMemoryCatalog(memoryDir).some((entry) => entry.id === normalized);
 }
 
+/**
+ * Inbound relations: live records whose relation lines point at `id`, sorted by relation name then
+ * source id. Records with an unparseable facts block are skipped.
+ */
+export function findMemoryBacklinks(memoryDir: string, id: string): Array<{ relation: string; id: string }> {
+  const targetId = normalizeMemoryId(id);
+  const targetRef = `@${targetId}`;
+  const backlinks: Array<{ relation: string; id: string }> = [];
+  for (const entry of filterSupersededEntries(memoryDir, getMemoryCatalog(memoryDir))) {
+    if (!entry.id || entry.id === targetId) continue;
+    const memory = readMemoryFile(path.join(memoryDir, entry.path));
+    if (!memory?.content.includes(targetRef)) continue;
+    let relations: Record<string, string>;
+    try {
+      relations = parseMemoryFacts(memory.content).relations;
+    } catch {
+      continue;
+    }
+    for (const [key, ref] of Object.entries(relations)) {
+      if (ref === targetRef) backlinks.push({ relation: key.replace(/^relation\./, ""), id: entry.id });
+    }
+  }
+  return backlinks.sort((a, b) => a.relation.localeCompare(b.relation) || a.id.localeCompare(b.id));
+}
+
 export function filterSupersededEntries(memoryDir: string, entries: MemoryCatalogEntry[]): MemoryCatalogEntry[] {
   return entries.filter((entry) => !entry.supersededBy || !supersededByExists(memoryDir, entry.supersededBy));
 }

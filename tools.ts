@@ -14,6 +14,7 @@ import {
   findCompactClusters,
   findConceptContainmentDuplicate,
   findIdFamilyRoute,
+  findMemoryBacklinks,
   findMemoryFileById,
   findSimilarStates,
   formatMemoryRead,
@@ -300,6 +301,21 @@ function renderCountResult(
   return renderText(theme.fg("toolOutput", text));
 }
 
+const MAX_BACKLINKS_SHOWN = 20;
+
+// Groups inbound relations by name; the list is capped so a heavily referenced record stays readable.
+function formatBacklinks(backlinks: Array<{ relation: string; id: string }>): string {
+  if (!backlinks.length) return "";
+  const groups = new Map<string, string[]>();
+  for (const { relation, id } of backlinks.slice(0, MAX_BACKLINKS_SHOWN)) {
+    groups.set(relation, [...(groups.get(relation) ?? []), `@${id}`]);
+  }
+  const lines = [...groups].map(([relation, ids]) => `- ${relation}: ${ids.join(", ")}`);
+  const hidden = backlinks.length - MAX_BACKLINKS_SHOWN;
+  if (hidden > 0) lines.push(`- +${hidden} more`);
+  return `\n\nReferenced by:\n${lines.join("\n")}`;
+}
+
 export function registerMemoryRead(pi: ExtensionAPI, settings: MemoryMdSettings): void {
   pi.registerTool({
     name: "memory_read",
@@ -332,8 +348,13 @@ export function registerMemoryRead(pi: ExtensionAPI, settings: MemoryMdSettings)
             ? `\n\nNote: superseded by @${memory.frontmatter.supersededBy}`
             : "";
 
+        const backlinksNote =
+          view !== "summary" && memory.frontmatter.id
+            ? formatBacklinks(findMemoryBacklinks(memoryDir, memory.frontmatter.id))
+            : "";
+
         return {
-          content: [{ type: "text", text: `${formatMemoryRead(memory, view)}${supersededNote}` }],
+          content: [{ type: "text", text: `${formatMemoryRead(memory, view)}${supersededNote}${backlinksNote}` }],
           details: { path: path.relative(memoryDir, fullPath), frontmatter: memory.frontmatter, view },
         };
       } catch (error) {
@@ -377,6 +398,7 @@ export function registerMemoryWrite(pi: ExtensionAPI, settings: MemoryMdSettings
       "state = current truth: overwrite the same id instead of adding snapshots. " +
       "event = a milestone, decision, or result worth recalling later, not a per-action log. " +
       "Never store session-local details (pids, /tmp paths, idle/busy status, unpushed SHAs). " +
+      "relations: name -> @id of an existing record in this project; prefer common names (follows, extends, corrects, builds_on, refines, depends_on, related). " +
       'To merge N records into one, write the distilled record with supersedes: ["@a", "@b", ...]; the new record is written first, then each listed record is marked superseded so it drops out of injection and listings. ' +
       "The first write in a project creates the local memory structure automatically.",
     parameters: Type.Object({
@@ -399,7 +421,12 @@ export function registerMemoryWrite(pi: ExtensionAPI, settings: MemoryMdSettings
       facts: Type.Optional(
         Type.Record(Type.String(), Type.Any({ description: "Machine-readable scalar/array fact values" })),
       ),
-      relations: Type.Optional(Type.Record(Type.String(), Type.String({ description: "Relation target stable @id" }))),
+      relations: Type.Optional(
+        Type.Record(
+          Type.String(),
+          Type.String({ description: "Target @id of an existing record in this project (e.g. @state.runtime)" }),
+        ),
+      ),
       notes: Type.Optional(Type.String({ description: "Optional prose/evidence rendered after structured knowledge" })),
       tags: Type.Optional(Type.Array(Type.String())),
       sensitive: Type.Optional(Type.Boolean({ description: "Mark this record as non-injectable sensitive memory" })),
@@ -576,6 +603,18 @@ export function registerMemoryWrite(pi: ExtensionAPI, settings: MemoryMdSettings
               concepts: memory.frontmatter.concepts ?? [],
             });
           }
+        }
+
+        // Relation targets must resolve to a record in this project, checked before any file is touched,
+        // so a typo or a non-record label never lands as a dangling edge.
+        const badRelations = Object.entries(parseMemoryFacts(memoryContent).relations).flatMap(([key, ref]) => {
+          if (ref.slice(1) === target.id) return [`- ${key} -> ${ref} (points at this record)`];
+          return findMemoryFileById(memoryDir, ref) ? [] : [`- ${key} -> ${ref} (not found)`];
+        });
+        if (badRelations.length) {
+          throw new Error(
+            `Relation targets must be other existing records in this project:\n${badRelations.join("\n")}\nFind the record's @id with memory_search, or drop the relation.`,
+          );
         }
 
         const finalSensitive = sensitive === undefined ? detectedSensitive : sensitive;
