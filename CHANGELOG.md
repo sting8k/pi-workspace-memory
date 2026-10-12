@@ -2,6 +2,12 @@
 
 Each release's GitHub notes are this file's section whose heading matches the tag. Add the section before tagging.
 
+## v0.7.0 - 2026-10-12
+
+- `memory_write` rejects relations whose target is not an existing record in the same project, or is the record itself, before any file is written. Real data had 40 dangling relation edges (labels like `vuln-017-a`, typos, pruned targets). Existing dangling edges are not cleaned up; rewriting a record that keeps one is now refused until the relation is fixed or dropped.
+- `memory_read` (full and knowledge views) lists "Referenced by": live records whose relations point at this one, grouped by relation name, up to 20. The summary view is unchanged.
+- The `memory_write` description suggests common relation names (follows, extends, corrects, builds_on, refines, depends_on, related). Names are not enforced.
+
 ## v0.6.1 - 2026-10-01
 
 - Fix the pi "Extension issues" warning on install: `@sinclair/typebox` is now a `"*"` peer dependency (provided by pi) instead of a dependency, so no second copy is installed. The pi peers use `"*"` too.
