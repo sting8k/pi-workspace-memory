@@ -122,7 +122,7 @@ test("memory_write marks sensitive-looking records as non-injectable", async () 
         description: "Ops access token path",
         summary: "Ops access details include credential paths",
         claims: ["Sensitive records should not be injected automatically"],
-        facts: { "ssh.identity_file": "/tmp/key" },
+        facts: { db_password: "r9mXm9Eo0GMbj9Qw" },
       },
       new AbortController().signal,
       () => {},
@@ -1098,7 +1098,7 @@ test("concept aliases are added, converted, and rejected", async () => {
 // Sensitive detection and flag recomputation
 // ============================================================================
 
-test("sensitive detection requires credential-shaped token mentions", async () => {
+test("sensitive detection flags secret-shaped values, not concept words", async () => {
   const { root, workspace, settings } = fixture();
   try {
     const { pi, tools } = fakePi();
@@ -1112,7 +1112,7 @@ test("sensitive detection requires credential-shaped token mentions", async () =
         kind: "event",
         description: "Token cost review",
         summary: "LLM token usage summary",
-        claims: ["Bare token mentions should not be treated as sensitive"],
+        claims: ["Password, SSH, secret and API token mentions alone are not sensitive"],
       },
       signal,
       () => {},
@@ -1127,7 +1127,7 @@ test("sensitive detection requires credential-shaped token mentions", async () =
         kind: "event",
         description: "API token rotation",
         summary: "Access token replaced after rotation",
-        claims: ["Tokens should be rotated periodically"],
+        claims: ["New PAT ghp_8fK2xQ9vLmN3pR7tY1wZ5cB0dH4jA6sE2uGi in CI vars"],
       },
       signal,
       () => {},
@@ -1172,7 +1172,7 @@ test("memory_write sensitive flag follows caller and recomputes from new content
     // branch 3: no explicit flag + harmless new content recomputes instead of inheriting the old flag
     await write("state/flag.md", {
       description: "Sensitive secret path",
-      summary: "Contains api_token details",
+      summary: "Contains api_token=Zq83kLm2Pw9xVb41 details",
       claims: ["Stored as sensitive"],
     });
     const recomputed = await write("state/flag.md", {
@@ -1186,7 +1186,7 @@ test("memory_write sensitive flag follows caller and recomputes from new content
     // and stays sensitive when the new content still looks sensitive
     const kept = await write("state/flag.md", {
       description: "Still secret",
-      summary: "Password rotation completed",
+      summary: "Password rotation completed: password=Hx7kLq2mVz9pT4wE",
       claims: ["Stays sensitive"],
     });
     assert.equal(kept.details.frontmatter.sensitive, true);

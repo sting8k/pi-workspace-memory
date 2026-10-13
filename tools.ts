@@ -87,15 +87,72 @@ function formatConceptDuplicateHints(hints?: ConceptDuplicateHint[]): string {
   ].join("\n");
 }
 
-const SENSITIVE_MEMORY_PATTERN =
-  /\b(?:api[-_\s]?key|credential|identity[-_\s]?file|password|passwd|private[-_\s]?key|secret|ssh|(?:api|access|auth|bearer|refresh|session|oauth)[-_\s]?token|token\s*[=:]\s*\S+)\b/i;
+// Secret-shaped values, adapted from gitleaks' default rules (config/gitleaks.toml): provider
+// token prefixes, private key blocks, credentials in URLs, and a generic `key = <value>` rule
+// gated by Shannon entropy. Words alone ("password", "ssh", "API token") are not secrets.
+const SECRET_END = String.raw`(?:[\x60'"\s;]|\\[nr]|$)`;
+const SECRET_RULES: ReadonlyArray<readonly [RegExp, number]> = [
+  [/-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----/gi, 0],
+  [/\b((?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16})\b/g, 3],
+  [/\b((?:ghp|gho|ghu|ghs|ghr)_[0-9a-zA-Z]{36}|github_pat_\w{82})/g, 3],
+  [/\b(glpat-[\w-]{20})/g, 3],
+  [/\b(xox[baprse]-[0-9a-zA-Z-]{20,})/g, 3],
+  [/hooks\.slack\.com\/(?:services|workflows|triggers)\/[A-Za-z0-9+/]{43,56}/g, 0],
+  [
+    new RegExp(
+      String.raw`\b(sk-(?:proj|svcacct|admin)-[\w-]{20,}|sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20})${SECRET_END}`,
+      "g",
+    ),
+    3,
+  ],
+  [new RegExp(String.raw`\b(sk-ant-(?:api03|admin01|oat01)-[\w-]{80,})${SECRET_END}`, "g"), 0],
+  [new RegExp(String.raw`\b(AIza[\w-]{35})${SECRET_END}`, "g"), 4],
+  [new RegExp(String.raw`\b((?:sk|rk)_(?:test|live|prod)_[a-zA-Z0-9]{10,99})${SECRET_END}`, "g"), 2],
+  [new RegExp(String.raw`\b(ey[a-zA-Z0-9]{17,}\.ey[\w/\\-]{17,}\.(?:[\w/\\-]{10,}={0,2})?)${SECRET_END}`, "g"), 3],
+  [new RegExp(String.raw`\b(dop_v1_[a-f0-9]{64})${SECRET_END}`, "g"), 3],
+  [new RegExp(String.raw`\b(npm_[a-z0-9]{36})${SECRET_END}`, "gi"), 2],
+  [new RegExp(String.raw`\b(hf_[a-zA-Z]{34})${SECRET_END}`, "g"), 2],
+  [new RegExp(String.raw`\b(SG\.[\w=.-]{66})${SECRET_END}`, "g"), 2],
+  [/\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:([^\s/@]{3,})@[\w.-]+/gi, 0],
+  // generic-api-key, tightened: the keyword must be a whole word (not "fastapi", "author"),
+  // only real assignment operators count, and letter-only values are skipped (gitleaks allowlist).
+  [
+    new RegExp(
+      String.raw`(?<![a-z0-9])(?:access|auth|api|credential|creds|key|passw(?:or)?d|secret|token)s?(?![a-z])[ \t\w.-]{0,20}[\s'"]{0,3}(?:=>?|:{1,3}=?)[\x60'"\s=]{0,5}([\w.=-]{10,150}|[a-z0-9][a-z0-9+/]{11,}={0,3})${SECRET_END}`,
+      "gi",
+    ),
+    3.5,
+  ],
+];
+
+function shannonEntropy(text: string): number {
+  const counts = new Map<string, number>();
+  for (const char of text) counts.set(char, (counts.get(char) ?? 0) + 1);
+  let bits = 0;
+  for (const count of counts.values()) bits -= (count / text.length) * Math.log2(count / text.length);
+  return bits;
+}
+
+function hasSecretValue(text: string): boolean {
+  return SECRET_RULES.some(([pattern, minEntropy]) => {
+    for (const match of text.matchAll(pattern)) {
+      const secret = match[1] ?? match[0];
+      if (minEntropy === 3.5 && /^[a-zA-Z_.-]+$/.test(secret)) continue;
+      if (shannonEntropy(secret) >= minEntropy) return true;
+    }
+    return false;
+  });
+}
 
 function hasSensitiveMemoryInput(value: unknown): boolean {
-  if (typeof value === "string") return SENSITIVE_MEMORY_PATTERN.test(value);
+  if (typeof value === "string") return hasSecretValue(value);
   if (Array.isArray(value)) return value.some((entry) => hasSensitiveMemoryInput(entry));
   if (typeof value === "object" && value !== null) {
-    return Object.entries(value).some(
-      ([key, entry]) => SENSITIVE_MEMORY_PATTERN.test(key) || hasSensitiveMemoryInput(entry),
+    // Check `key = value` so the generic rule sees fact names like `db_password`.
+    return Object.entries(value).some(([key, entry]) =>
+      typeof entry === "object" && entry !== null
+        ? hasSensitiveMemoryInput(entry)
+        : hasSecretValue(`${key} = ${String(entry)}`),
     );
   }
   return false;
@@ -429,7 +486,12 @@ export function registerMemoryWrite(pi: ExtensionAPI, settings: MemoryMdSettings
       ),
       notes: Type.Optional(Type.String({ description: "Optional prose/evidence rendered after structured knowledge" })),
       tags: Type.Optional(Type.Array(Type.String())),
-      sensitive: Type.Optional(Type.Boolean({ description: "Mark this record as non-injectable sensitive memory" })),
+      sensitive: Type.Optional(
+        Type.Boolean({
+          description:
+            "Mark this record as non-injectable sensitive memory. Secret-shaped values (API keys, tokens, private keys, key=value secrets) are detected automatically; set true for credentials written in prose.",
+        }),
+      ),
       kind: Type.Optional(
         Type.Union([Type.Literal("state"), Type.Literal("event")], {
           description: "Optional lifecycle; inferred from logical path or record ID and must match it",
