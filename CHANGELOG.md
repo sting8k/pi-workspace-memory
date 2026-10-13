@@ -2,6 +2,12 @@
 
 Each release's GitHub notes are this file's section whose heading matches the tag. Add the section before tagging.
 
+## v0.7.1 - 2026-10-13
+
+- Sensitive auto-detection now looks for secret-shaped values instead of words about secrets. Rules are a loose subset of gitleaks: provider token prefixes (`ghp_`, `sk-ant-`, `AKIA`, `xoxb-`, …), private key blocks, credentials in URLs, and `key = <high-entropy value>` assignments. Mentions like "password", "ssh" or "API token" alone no longer hide a record from injection; on real data this flags 12 of 1735 records instead of 199. Credentials written in prose need an explicit `sensitive: true`. Existing flags are recomputed only when a record is overwritten.
+- `memory_write` no longer warns "marked sensitive" when the caller passes `sensitive: false`.
+- README explains the `injection` modes (`message-append`, `system-prompt`, `off`).
+
 ## v0.7.0 - 2026-10-12
 
 - `memory_write` rejects relations whose target is not an existing record in the same project, or is the record itself, before any file is written. Real data had 40 dangling relation edges (labels like `vuln-017-a`, typos, pruned targets). Existing dangling edges are not cleaned up; rewriting a record that keeps one is now refused until the relation is fixed or dropped.
