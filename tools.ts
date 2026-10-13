@@ -181,7 +181,7 @@ function buildMemoryWriteWarnings(input: {
   if (input.content && input.content.length > 800) {
     warnings.push("Raw content is long; prefer structured fields plus short notes.");
   }
-  if (input.detectedSensitive) {
+  if (input.detectedSensitive && input.finalSensitive) {
     warnings.push("Sensitive-looking content was marked sensitive and will not be injected automatically.");
   } else if (input.finalSensitive) {
     warnings.push("Sensitive record will not be injected automatically.");
